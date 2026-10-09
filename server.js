@@ -1,0 +1,547 @@
+'use strict';
+/*
+ * News website + admin panel.
+ * Start with:  npm install   then   npm start
+ * Open http://localhost:3000 and the first-time setup page appears.
+ */
+const path = require('node:path');
+const crypto = require('node:crypto');
+const express = require('express');
+const multer = require('multer');
+
+const db = require('./src/db');
+const core = require('./src/core');
+const V = require('./src/views');
+const A = require('./src/admin-views');
+const { html, now, VISIBLE, fetchPosts, countPosts } = core;
+
+const PORT = Number(process.env.PORT) || 3000;
+const app = express();
+app.disable('x-powered-by');
+app.set('trust proxy', 1);            // Render (and most hosts) sit behind one proxy
+
+/* ---------- Every response ---------- */
+app.use((req, res, next) => {
+  res.set({
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'SAMEORIGIN',
+    'Referrer-Policy': 'strict-origin-when-cross-origin',
+    'Content-Security-Policy': "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self'; "
+      + "script-src 'self'; frame-src https://www.youtube-nocookie.com; form-action 'self'; base-uri 'self'; frame-ancestors 'self'",
+  });
+  next();
+});
+app.get('/healthz', (req, res) => res.type('text').send('ok'));
+app.use('/assets', express.static(path.join(__dirname, 'public', 'assets'), { maxAge: '7d', index: false }));
+
+/* ---------- First run: nothing works until an admin exists ---------- */
+let installed = false;
+app.use(async (req, res, next) => {
+  if (!installed) installed = await core.isInstalled();
+  if (!installed && !req.path.startsWith('/admin/setup')) return res.redirect('/admin/setup');
+  req.ctx = await core.buildCtx(req);
+  next();
+});
+
+const pageParam = (req) => Math.max(1, parseInt(req.query.page, 10) || 1);
+const perPage = (ctx) => Math.max(4, Math.min(40, parseInt(ctx.set('per_page', '10'), 10) || 10));
+const str = (v, max) => String(typeof v === 'string' ? v : '').trim().slice(0, max);
+const mostRead = (ctx) => fetchPosts(`${VISIBLE} AND p.views > 0 AND p.published_at >= ?`, [ctx.now, ctx.now - 30 * 86400], 5, 0, 'p.views DESC, p.published_at DESC');
+
+/* ====================== Public site ====================== */
+
+app.get('/', async (req, res) => {
+  const ctx = req.ctx;
+  const n = perPage(ctx);
+  // Lead story: the newest one marked "top story", otherwise simply the newest.
+  const lead = (await fetchPosts(`${VISIBLE} AND p.is_featured = 1`, [ctx.now], 1))[0] || (await fetchPosts(VISIBLE, [ctx.now], 1))[0] || null;
+  const top = lead ? await fetchPosts(`${VISIBLE} AND p.id != ?`, [ctx.now, lead.id], 4) : [];
+  const skip = (lead ? [lead] : []).concat(top).map((p) => Number(p.id));
+  const notIn = skip.length ? ` AND p.id NOT IN (${skip.join(',')})` : '';
+  const total = await countPosts(VISIBLE + notIn, [ctx.now]);
+  const pages = Math.max(1, Math.ceil(total / n));
+  const page = Math.min(pageParam(req), pages);
+  res.send(V.homePage(ctx, {
+    lead, top, page, pages,
+    latest: await fetchPosts(VISIBLE + notIn, [ctx.now], n, (page - 1) * n),
+    breaking: await fetchPosts(`${VISIBLE} AND p.is_breaking = 1 AND p.published_at >= ?`, [ctx.now, ctx.now - 86400], 5),
+    mostRead: await mostRead(ctx),
+  }));
+});
+
+app.get('/news/:id', async (req, res, next) => {
+  const ctx = req.ctx;
+  const id = /^\d{1,9}$/.test(req.params.id) ? Number(req.params.id) : 0;
+  const post = id ? (await fetchPosts('p.id = ?', [id], 1))[0] : null;
+  if (!post) return next();
+  // Drafts and scheduled stories open only for the logged-in admin (Preview button).
+  const isPublic = post.status === 'published' && post.published_at <= ctx.now;
+  if (!isPublic && !(await core.readSession(core.readCookies(req).ns))) return next();
+  const ua = String(req.get('user-agent') || '').toLowerCase();
+  if (isPublic && ua && !/bot|crawl|spider|slurp|preview|facebookexternalhit|whatsapp/.test(ua)) {
+    await db.run('UPDATE posts SET views = views + 1 WHERE id = ?', [id]);
+  }
+  if (!isPublic) res.set('Cache-Control', 'no-store');
+  res.send(V.articlePage(ctx, {
+    post, preview: !isPublic,
+    related: post.category_id ? await fetchPosts(`${VISIBLE} AND p.category_id = ? AND p.id != ?`, [ctx.now, post.category_id, id], 4) : [],
+    mostRead: await mostRead(ctx),
+  }));
+});
+
+app.get('/category/:id', async (req, res, next) => {
+  const ctx = req.ctx;
+  const cat = ctx.cats.find((c) => String(c.id) === req.params.id);
+  if (!cat) return next();
+  const n = perPage(ctx);
+  const where = `${VISIBLE} AND p.category_id = ?`;
+  const total = await countPosts(where, [ctx.now, cat.id]);
+  const pages = Math.max(1, Math.ceil(total / n));
+  const page = Math.min(pageParam(req), pages);
+  res.send(V.categoryPage(ctx, { cat, total, page, pages, posts: await fetchPosts(where, [ctx.now, cat.id], n, (page - 1) * n), mostRead: await mostRead(ctx) }));
+});
+
+app.get('/search', async (req, res) => {
+  const ctx = req.ctx;
+  const q = str(req.query.q, 80);
+  let posts = [];
+  let pages = 1;
+  let page = 1;
+  if (q !== '') {
+    const like = core.likeValue(q);
+    const where = `${VISIBLE} AND (LOWER(p.title) LIKE ? ESCAPE '\\' OR LOWER(p.summary) LIKE ? ESCAPE '\\' OR LOWER(p.body) LIKE ? ESCAPE '\\')`;
+    const params = [ctx.now, like, like, like];
+    pages = Math.max(1, Math.ceil((await countPosts(where, params)) / 12));
+    page = Math.min(pageParam(req), pages);
+    posts = await fetchPosts(where, params, 12, (page - 1) * 12);
+  }
+  res.send(V.searchPage(ctx, { q, posts, page, pages, mostRead: await mostRead(ctx) }));
+});
+
+// Photos are kept in the database and served from here.
+app.get('/uploads/:name', async (req, res, next) => {
+  const img = await core.loadImage(req.params.name);
+  if (!img) return next();
+  res.set({ 'Content-Type': img.mime, 'Cache-Control': 'public, max-age=31536000, immutable' });
+  res.send(img.data);
+});
+
+app.get('/feed.xml', async (req, res) => {
+  res.type('application/rss+xml').send(V.feedXml(req.ctx, await fetchPosts(VISIBLE, [req.ctx.now], 20)));
+});
+app.get('/sitemap.xml', async (req, res) => {
+  res.type('application/xml').send(V.sitemapXml(req.ctx, await fetchPosts(VISIBLE, [req.ctx.now], 2000)));
+});
+app.get('/robots.txt', (req, res) => {
+  res.type('text').send(`User-agent: *\nDisallow: /admin\nSitemap: ${req.ctx.origin}/sitemap.xml\n`);
+});
+
+/* ====================== Admin panel ====================== */
+
+const admin = express.Router();
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: core.MAX_PHOTO_BYTES, files: 1, fields: 40, fieldSize: 2 * 1024 * 1024 },
+});
+const TOO_BIG = 'That photo is larger than 6 MB. Use a smaller one.';
+
+admin.use(express.urlencoded({ extended: false, limit: '2mb' }));
+admin.use((req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  req.cookies = core.readCookies(req);
+  // An anonymous id cookie; form tokens are derived from it (CSRF protection).
+  let visitor = req.cookies.nv;
+  if (!/^[a-f0-9]{32}$/.test(visitor || '')) {
+    visitor = crypto.randomBytes(16).toString('hex');
+    core.setCookie(req, res, 'nv', visitor, 30 * 86400);
+  }
+  req.csrf = core.csrfFor(visitor);
+  next();
+});
+
+function flash(req, res, msg, type = 'ok') {
+  req.flashOut = (req.flashOut || []).concat([[type, msg]]);
+  core.setCookie(req, res, 'nf', JSON.stringify(req.flashOut), 60);
+}
+/** Everything an admin page template needs. Shows waiting messages once. */
+function pageArgs(req, res) {
+  let waiting = [];
+  if (req.cookies.nf) {
+    try { waiting = JSON.parse(req.cookies.nf).filter((f) => Array.isArray(f) && f.length === 2).slice(0, 5); } catch (e) { /* ignore */ }
+    core.setCookie(req, res, 'nf', '', 0);
+  }
+  const temporary = process.env.RENDER && db.kind === 'sqlite' && !process.env.DATA_DIR;
+  return {
+    ctx: req.ctx, csrf: req.csrf, user: req.user, flash: waiting,
+    warning: temporary ? 'This server does not keep files: news and photos added now will be lost when it restarts. Add a DATABASE_URL to keep them (see DEPLOY-RENDER.md).' : '',
+  };
+}
+function checkCsrf(req, res, next) {
+  if (core.safeEqual((req.body && req.body.csrf) || '', req.csrf)) return next();
+  res.status(400).send(A.messagePage(pageArgs(req, res), 'This form expired', 'Go back, reload the page and try again.'));
+}
+async function requireLogin(req, res, next) {
+  const user = await core.readSession(req.cookies.ns);
+  if (!user) return res.redirect('/admin/login');
+  // Keep active admins logged in.
+  if (user.sessionEnds - now() < (core.SESSION_HOURS / 2) * 3600) core.setCookie(req, res, 'ns', core.makeSession(user));
+  req.user = user;
+  next();
+}
+
+/* ----- Setup (open only while no admin exists) ----- */
+const isFresh = async () => Number((await db.get('SELECT (SELECT COUNT(*) FROM posts) + (SELECT COUNT(*) FROM categories) AS n')).n) === 0;
+
+admin.get('/setup', async (req, res) => {
+  if (await core.isInstalled()) return res.redirect('/admin/login');
+  req.ctx = req.ctx || await core.buildCtx(req);
+  res.send(A.setupPage(pageArgs(req, res), { site_name: req.ctx.set('site_name'), lang: req.ctx.set('lang', 'hi'), username: '' }, [], await isFresh()));
+});
+admin.post('/setup', checkCsrf, async (req, res) => {
+  if (await core.isInstalled()) return res.redirect('/admin/login');
+  req.ctx = req.ctx || await core.buildCtx(req);
+  const v = { site_name: str(req.body.site_name, 60), lang: req.body.lang === 'en' ? 'en' : 'hi', username: str(req.body.username, 40) };
+  const pass = String(req.body.password || '');
+  const errors = [];
+  if (v.site_name === '') errors.push('Enter a name for your news site.');
+  if (!/^[A-Za-z0-9_.-]{3,30}$/.test(v.username)) errors.push('Username must be 3 to 30 letters or numbers, without spaces.');
+  if (pass.length < 8) errors.push('Password must be at least 8 characters.');
+  else if (pass !== String(req.body.password2 || '')) errors.push('The two passwords do not match.');
+  const fresh = await isFresh();
+  if (errors.length) return res.send(A.setupPage(pageArgs(req, res), v, errors, fresh));
+
+  const hash = await core.hashPassword(pass);
+  if (await core.isInstalled()) return res.redirect('/admin/login');
+  await db.run('INSERT INTO users(username, password_hash, created_at) VALUES(?, ?, ?)', [v.username, hash, now()]);
+  installed = true;
+  const user = await db.get('SELECT * FROM users WHERE LOWER(username) = LOWER(?)', [v.username]);
+
+  if (fresh) {
+    const names = v.lang === 'hi' ? ['स्थानीय', 'प्रदेश', 'देश', 'व्यापार', 'खेल', 'मनोरंजन'] : ['Local', 'State', 'National', 'Business', 'Sports', 'Entertainment'];
+    for (let i = 0; i < names.length; i++) await db.run('INSERT INTO categories(name, sort) VALUES(?, ?)', [names[i], i + 1]);
+    core.clearCategories();
+    const first = (await core.getCategories())[0];
+    const sample = v.lang === 'hi' ? {
+      title: 'आपकी न्यूज़ वेबसाइट तैयार है',
+      summary: 'यह एक नमूना खबर है। एडमिन पैनल से इसे हटाएँ और अपनी पहली खबर डालें।',
+      body: 'यह खबर सिर्फ़ यह दिखाने के लिए है कि आपकी साइट पर खबर कैसी दिखेगी।\n\n## रोज़ खबर कैसे डालें\n\n1. एडमिन पैनल में **Add news** खोलें।\n2. शीर्षक, खबर और फ़ोटो डालें, फिर श्रेणी चुनें।\n3. **Publish** दबाएँ। खबर तुरंत होम पेज पर आ जाएगी।\n\n> सबसे बड़ी खबर को होम पेज पर सबसे ऊपर दिखाने के लिए “Show as top story” चुनें।\n\nइस नमूना खबर को **All news** से हटा दें।',
+    } : {
+      title: 'Your news site is ready',
+      summary: 'This is a sample story. Delete it from the admin panel and publish your first one.',
+      body: 'This story only shows how news will look on your site.\n\n## How to add news every day\n\n1. Open **Add news** in the admin panel.\n2. Type the headline and the story, add a photo and pick a category.\n3. Press **Publish**. The story appears on the home page straight away.\n\n> Tick “Show as top story” to put your biggest story at the top of the home page.\n\nDelete this sample story from **All news**.',
+    };
+    await db.run(
+      "INSERT INTO posts(title, summary, body, category_id, author, status, published_at, created_at, updated_at) VALUES(?, ?, ?, ?, ?, 'published', ?, ?, ?)",
+      [sample.title, sample.summary, sample.body, first.id, v.username, now(), now(), now()]);
+  }
+  await core.setSetting('site_name', v.site_name);
+  await core.setSetting('lang', v.lang);
+  if (!req.ctx.set('default_author')) await core.setSetting('default_author', v.username);
+
+  core.setCookie(req, res, 'ns', core.makeSession(user));
+  flash(req, res, fresh ? 'Your site is ready. Add your first story from “Add news”.' : 'New login created. Your news and settings are unchanged.');
+  res.redirect('/admin');
+});
+
+/* ----- Login / logout ----- */
+admin.get('/login', async (req, res) => {
+  if (await core.readSession(req.cookies.ns)) return res.redirect('/admin');
+  res.send(A.loginPage(pageArgs(req, res), '', ''));
+});
+admin.post('/login', checkCsrf, async (req, res) => {
+  const username = str(req.body.username, 40);
+  const keys = ['ip:' + req.ip, 'user:' + username.toLowerCase()];
+  await db.run('DELETE FROM login_attempts WHERE ts < ?', [now() - 900]);
+  // Counted per address and per username, so changing one of them does not help a guesser.
+  const count = async (who) => Number((await db.get('SELECT COUNT(*) AS n FROM login_attempts WHERE who = ?', [who])).n);
+  if (Math.max(await count(keys[0]), await count(keys[1])) >= 8) {
+    return res.send(A.loginPage(pageArgs(req, res), username, 'Too many wrong attempts. Wait 15 minutes and try again.'));
+  }
+
+  const user = await db.get('SELECT * FROM users WHERE LOWER(username) = LOWER(?)', [username]);
+  const ok = await core.verifyPassword(String(req.body.password || ''), user ? user.password_hash : '');
+  if (!user || !ok) {
+    for (const who of keys) await db.run('INSERT INTO login_attempts(who, ts) VALUES(?, ?)', [who, now()]);
+    return res.send(A.loginPage(pageArgs(req, res), username, 'Wrong username or password.'));
+  }
+  await db.run('DELETE FROM login_attempts WHERE who = ? OR who = ?', keys);
+  core.setCookie(req, res, 'ns', core.makeSession(user));
+  res.redirect('/admin');
+});
+admin.post('/logout', checkCsrf, (req, res) => {
+  core.setCookie(req, res, 'ns', '', 0);
+  res.redirect('/admin/login');
+});
+
+admin.use(requireLogin);
+
+/* ----- All news ----- */
+admin.get('/', async (req, res) => {
+  const ctx = req.ctx;
+  let show = String(req.query.show || 'all');
+  const q = str(req.query.q, 80);
+  let where = '1 = 1';
+  const params = [];
+  if (show === 'published') { where = "p.status = 'published' AND p.published_at <= ?"; params.push(ctx.now); }
+  else if (show === 'draft') where = "p.status = 'draft'";
+  else if (show === 'scheduled') { where = "p.status = 'published' AND p.published_at > ?"; params.push(ctx.now); }
+  else show = 'all';
+  if (q !== '') { where += " AND LOWER(p.title) LIKE ? ESCAPE '\\'"; params.push(core.likeValue(q)); }
+
+  const total = await countPosts(where, params);
+  const pages = Math.max(1, Math.ceil(total / 20));
+  const page = Math.min(pageParam(req), pages);
+  const today = core.startOfToday(ctx.tz);
+  const qs = new URLSearchParams();
+  if (show !== 'all') qs.set('show', show);
+  if (q) qs.set('q', q);
+  if (page > 1) qs.set('page', page);
+  res.send(A.listPage(pageArgs(req, res), {
+    show, q, page, pages, qs: qs.toString(),
+    posts: await fetchPosts(where, params, 20, (page - 1) * 20),
+    stats: [
+      ['Published today', await countPosts("p.status = 'published' AND p.published_at >= ? AND p.published_at <= ?", [today, ctx.now])],
+      ['Published in total', await countPosts("p.status = 'published' AND p.published_at <= ?", [ctx.now])],
+      ['Drafts', await countPosts("p.status = 'draft'")],
+      ['Total views', Number((await db.get('SELECT COALESCE(SUM(views), 0) AS n FROM posts')).n)],
+    ],
+  }));
+});
+admin.post('/delete', checkCsrf, async (req, res) => {
+  const id = parseInt(req.body.id, 10) || 0;
+  const post = id ? await db.get('SELECT image FROM posts WHERE id = ?', [id]) : null;
+  if (post) {
+    await db.run('DELETE FROM posts WHERE id = ?', [id]);
+    await core.deleteImage(post.image);
+    flash(req, res, 'Story deleted.');
+  }
+  const back = String(req.body.back || '').replace(/^\?/, '');
+  res.redirect('/admin' + (/^[A-Za-z0-9=&%+._-]{1,300}$/.test(back) ? '?' + back : ''));
+});
+
+/* ----- Add / edit a story ----- */
+const blankPost = (req) => ({
+  id: 0, title: '', summary: '', body: '', image: '', image_caption: '', category_id: null,
+  author: req.ctx.set('default_author', req.user.username), status: 'draft', is_featured: 0, is_breaking: 0, published_at: now(),
+});
+const loadPost = (id) => (/^\d{1,9}$/.test(String(id)) ? db.get('SELECT * FROM posts WHERE id = ?', [Number(id)]) : null);
+
+admin.get('/post', (req, res) => res.send(A.postPage(pageArgs(req, res), blankPost(req), [], true)));
+admin.get('/post/:id', async (req, res) => {
+  const post = await loadPost(req.params.id);
+  if (!post) { flash(req, res, 'That story no longer exists.', 'error'); return res.redirect('/admin'); }
+  res.send(A.postPage(pageArgs(req, res), post, [], false));
+});
+
+// A photo that is too large must not crash the form; send the editor back with a message.
+const photoField = (field) => (req, res, next) => upload.single(field)(req, res, (err) => {
+  if (!err) return next();
+  if (req.path === '/upload') return res.json({ ok: false, error: err.code === 'LIMIT_FILE_SIZE' ? TOO_BIG : 'The photo could not be uploaded. Try again.' });
+  flash(req, res, err.code === 'LIMIT_FILE_SIZE' ? TOO_BIG : 'The form could not be read. Try again.', 'error');
+  res.redirect(req.originalUrl);
+});
+
+async function savePost(req, res) {
+  const ctx = req.ctx;
+  const isNew = !req.params.id;
+  const post = isNew ? blankPost(req) : await loadPost(req.params.id);
+  if (!post) { flash(req, res, 'That story no longer exists.', 'error'); return res.redirect('/admin'); }
+  const b = req.body;
+  const oldImage = post.image;
+  const wasDraft = isNew || post.status === 'draft';
+  const storedTime = post.published_at;
+  const errors = [];
+
+  post.title = str(b.title, 200);
+  post.summary = str(b.summary, 400);
+  post.body = String(b.body || '').trim();
+  post.image_caption = str(b.image_caption, 200);
+  post.author = str(b.author, 80);
+  post.is_featured = b.is_featured ? 1 : 0;
+  post.is_breaking = b.is_breaking ? 1 : 0;
+  post.status = b.action === 'publish' ? 'published' : 'draft';
+  const cat = ctx.cats.find((c) => String(c.id) === String(b.category_id));
+  post.category_id = cat ? cat.id : null;
+
+  // Publish time. A story going live for the first time gets the current time,
+  // unless a different date was picked on purpose (back-dating or scheduling).
+  const when = str(b.published_at, 16);
+  const goingLive = post.status === 'published' && wasDraft;
+  if (when === '' || (goingLive && when === core.toLocalInput(storedTime, ctx.tz))) {
+    if (isNew || goingLive) post.published_at = now();
+  } else {
+    const ts = core.fromLocalInput(when, ctx.tz);
+    if (ts) post.published_at = ts; else errors.push('The publish date is not valid.');
+  }
+
+  if (post.title === '') errors.push('Type a headline.');
+  if (post.body === '' && post.status === 'published') errors.push('Type the story before publishing. To finish it later, use “Save as draft”.');
+
+  if (!errors.length && req.file) {
+    try { post.image = await core.saveImage(req.file.buffer); } catch (e) { errors.push(e.message); }
+  } else if (b.remove_image) {
+    post.image = '';
+    post.image_caption = '';
+  }
+
+  if (errors.length) {
+    if (!b.remove_image) post.image = oldImage;    // keep the old photo on screen
+    return res.send(A.postPage(pageArgs(req, res), post, errors, isNew));
+  }
+
+  const t = now();
+  const fields = [post.title, post.summary, post.body, post.image, post.image_caption, post.category_id, post.author, post.status,
+    post.is_featured, post.is_breaking, post.published_at, t];
+  let id = post.id;
+  if (isNew) {
+    id = (await db.get(
+      `INSERT INTO posts(title, summary, body, image, image_caption, category_id, author, status, is_featured, is_breaking, published_at, updated_at, created_at)
+       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`, fields.concat([t]))).id;
+  } else {
+    await db.run(
+      `UPDATE posts SET title=?, summary=?, body=?, image=?, image_caption=?, category_id=?, author=?, status=?, is_featured=?, is_breaking=?, published_at=?, updated_at=?
+       WHERE id=?`, fields.concat([id]));
+  }
+  if (oldImage && oldImage !== post.image) await core.deleteImage(oldImage);
+
+  if (post.status === 'draft') flash(req, res, 'Draft saved. It is not on the website yet.');
+  else if (post.published_at > t) flash(req, res, `Scheduled. It will appear on the website on ${ctx.date(post.published_at)}.`);
+  else flash(req, res, 'Published. The story is live on the website.');
+  res.redirect('/admin/post/' + id);
+}
+admin.post('/post', photoField('image'), checkCsrf, savePost);
+admin.post('/post/:id', photoField('image'), checkCsrf, savePost);
+
+// "Photo" button in the story editor. Answers in JSON.
+admin.post('/upload', photoField('photo'), async (req, res) => {
+  if (!core.safeEqual((req.body && req.body.csrf) || '', req.csrf)) return res.status(400).json({ ok: false, error: 'This page expired. Save your text, reload and try again.' });
+  if (!req.file) return res.json({ ok: false, error: 'No photo was received. Try again.' });
+  try {
+    res.json({ ok: true, path: 'uploads/' + await core.saveImage(req.file.buffer) });
+  } catch (e) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+/* ----- Categories ----- */
+admin.get('/categories', async (req, res) => {
+  res.send(A.categoriesPage(pageArgs(req, res),
+    await db.all('SELECT c.*, (SELECT COUNT(*) FROM posts p WHERE p.category_id = c.id) AS n FROM categories c ORDER BY c.sort, c.name')));
+});
+admin.post('/categories', checkCsrf, async (req, res) => {
+  const id = parseInt(req.body.id, 10) || 0;
+  const name = str(req.body.name, 40);
+  const sort = Math.max(0, Math.min(999, parseInt(req.body.sort, 10) || 0));
+  try {
+    if (req.body.action === 'add') {
+      if (name === '') flash(req, res, 'Type a category name.', 'error');
+      else {
+        const next = Number((await db.get('SELECT COALESCE(MAX(sort), 0) + 1 AS n FROM categories')).n);
+        await db.run('INSERT INTO categories(name, sort) VALUES(?, ?)', [name, next]);
+        flash(req, res, 'Category added.');
+      }
+    } else if (req.body.action === 'save' && id) {
+      if (name === '') flash(req, res, 'A category needs a name.', 'error');
+      else { await db.run('UPDATE categories SET name = ?, sort = ? WHERE id = ?', [name, sort, id]); flash(req, res, 'Category saved.'); }
+    } else if (req.body.action === 'delete' && id) {
+      await db.run('UPDATE posts SET category_id = NULL WHERE category_id = ?', [id]);
+      await db.run('DELETE FROM categories WHERE id = ?', [id]);
+      flash(req, res, 'Category deleted. Its stories are kept, without a category.');
+    }
+  } catch (e) {
+    if (!/unique/i.test(String(e.message))) throw e;
+    flash(req, res, 'A category with that name already exists.', 'error');
+  }
+  core.clearCategories();
+  res.redirect('/admin/categories');
+});
+
+/* ----- Settings + password ----- */
+admin.get('/settings', (req, res) => res.send(A.settingsPage(pageArgs(req, res))));
+admin.post('/settings', checkCsrf, async (req, res) => {
+  const b = req.body;
+  const cleanUrl = (v) => (/^https?:\/\/[^\s<>"']+$/i.test(str(v, 300)) ? str(v, 300) : '');
+  const name = str(b.site_name, 60);
+  if (name === '') flash(req, res, 'The site name cannot be empty.', 'error');
+  else {
+    const email = str(b.contact_email, 120);
+    const values = {
+      site_name: name,
+      tagline: str(b.tagline, 120),
+      lang: b.lang === 'hi' ? 'hi' : 'en',
+      about: str(b.about, 600),
+      default_author: str(b.default_author, 80),
+      contact_phone: str(b.contact_phone, 40),
+      contact_email: /^[^\s@<>"']+@[^\s@<>"']+\.[^\s@<>"']+$/.test(email) ? email : '',
+      address: str(b.address, 300),
+      per_page: String(Math.max(4, Math.min(40, parseInt(b.per_page, 10) || 10))),
+      timezone: core.ZONES.includes(b.timezone) ? b.timezone : 'Asia/Kolkata',
+    };
+    for (const k of ['facebook_url', 'youtube_url', 'instagram_url', 'whatsapp_url', 'site_url']) values[k] = cleanUrl(b[k]);
+    for (const [k, v] of Object.entries(values)) await core.setSetting(k, v);
+    flash(req, res, 'Settings saved.');
+  }
+  res.redirect('/admin/settings');
+});
+admin.post('/password', checkCsrf, async (req, res) => {
+  const fresh = String(req.body.new_password || '');
+  if (!(await core.verifyPassword(String(req.body.current_password || ''), req.user.password_hash))) flash(req, res, 'The current password is wrong.', 'error');
+  else if (fresh.length < 8) flash(req, res, 'The new password must be at least 8 characters.', 'error');
+  else if (fresh !== String(req.body.new_password2 || '')) flash(req, res, 'The two new passwords do not match.', 'error');
+  else {
+    const hash = await core.hashPassword(fresh);
+    await db.run('UPDATE users SET password_hash = ? WHERE id = ?', [hash, req.user.id]);
+    core.setCookie(req, res, 'ns', core.makeSession({ id: req.user.id, password_hash: hash }));
+    flash(req, res, 'Password changed.');
+  }
+  res.redirect('/admin/settings');
+});
+
+app.use('/admin', admin);
+
+/* ---------- Not found + errors ---------- */
+app.use((req, res) => res.status(404).send(V.notFoundPage(req.ctx)));
+app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
+  if (err && err.type === 'entity.too.large') return res.status(413).type('text').send('That form was too large. Go back and shorten the text.');
+  console.error('Error on', req.method, req.originalUrl, '-', err && err.stack ? err.stack : err);
+  res.status(500).send(html`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Something went wrong</title>
+<body style="font-family:system-ui,sans-serif;max-width:560px;margin:12vh auto;padding:0 20px;line-height:1.6"><h1 style="font-size:22px">Something went wrong</h1>
+<p>The page could not be shown. Reload in a moment. If it keeps happening, check the server log.</p></body>`.toString());
+});
+
+/* ---------- Start ---------- */
+async function start() {
+  let kind;
+  try {
+    kind = await db.init();
+    await core.loadSecret();
+  } catch (e) {
+    console.error('\nThe site could not open its database.');
+    console.error(process.env.DATABASE_URL ? 'Check that DATABASE_URL is the full connection string from your database provider.' : 'Check that the "data" folder can be written to.');
+    console.error('Details:', e.message, '\n');
+    process.exit(1);
+  }
+
+  // Forgot the password? Set ADMIN_PASSWORD_RESET to a new password, restart, log in, then remove it.
+  const reset = process.env.ADMIN_PASSWORD_RESET;
+  if (reset) {
+    const first = await db.get('SELECT id, username FROM users ORDER BY id LIMIT 1');
+    if (reset.length < 8) console.warn('ADMIN_PASSWORD_RESET ignored: it must be at least 8 characters.');
+    else if (first) {
+      await db.run('UPDATE users SET password_hash = ? WHERE id = ?', [await core.hashPassword(reset), first.id]);
+      await db.run('DELETE FROM login_attempts');
+      console.warn(`Password for "${first.username}" was reset from ADMIN_PASSWORD_RESET. Remove that variable now.`);
+    }
+  }
+
+  const server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`News site running on port ${PORT} (${kind === 'postgres' ? 'PostgreSQL database' : 'SQLite file in ' + (process.env.DATA_DIR || './data')})`);
+    if (kind === 'sqlite' && process.env.RENDER && !process.env.DATA_DIR) {
+      console.warn('WARNING: no DATABASE_URL set. On Render, news and photos will be lost on every restart. See DEPLOY-RENDER.md.');
+    }
+  });
+  const stop = () => server.close(() => { Promise.resolve(db.close()).finally(() => process.exit(0)); });
+  process.on('SIGTERM', stop);
+  process.on('SIGINT', stop);
+}
+start();

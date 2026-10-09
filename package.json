@@ -1,0 +1,18 @@
+{
+  "name": "news-site",
+  "version": "1.0.0",
+  "private": true,
+  "description": "News website with an admin panel for adding stories every day",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "multer": "^2.0.2",
+    "pg": "^8.16.0"
+  }
+}
