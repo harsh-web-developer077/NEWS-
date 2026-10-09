@@ -50,6 +50,44 @@ async function getCategories() {
   return catCache;
 }
 const clearCategories = () => { catCache = null; };
+
+/* ---------- Pages (About, Contact, ...) ---------- */
+let pageCache = null;
+async function getPages() {
+  if (!pageCache) pageCache = await db.all('SELECT id, slug, title, show_form, sort FROM pages ORDER BY sort, id');
+  return pageCache;
+}
+const clearPages = () => { pageCache = null; };
+const RESERVED_SLUGS = ['admin', 'news', 'category', 'search', 'uploads', 'assets', 'feed', 'sitemap', 'robots', 'healthz', 'page'];
+const validSlug = (slug) => /^[a-z0-9][a-z0-9-]{1,58}$/.test(String(slug)) && !RESERVED_SLUGS.includes(String(slug));
+
+/** Creates the About and Contact pages once, in the site's language. Deleted pages are not re-created. */
+async function ensurePages() {
+  const s = await getSettings();
+  if (s._pages_seeded) return;
+  const site = s.site_name || 'News';
+  const hi = s.lang === 'hi';
+  const defaults = hi ? [
+    ['about', 'हमारे बारे में', 0,
+      `**${site}** एक न्यूज़ वेबसाइट है जो हर दिन आपके इलाके की खबरें आप तक पहुँचाती है।\n\n## यहाँ आपको क्या मिलेगा\n\n- स्थानीय खबरें, सबसे पहले\n- प्रदेश, देश, व्यापार और खेल की खबरें\n- खबरों के साथ फ़ोटो और वीडियो\n\n## हमारा वादा\n\nहम खबर छापने से पहले तथ्यों की जाँच करते हैं और गलती होने पर उसे खुलकर सुधारते हैं। किसी खबर में गलती दिखे तो संपर्क पेज से हमें बताएँ।`],
+    ['contact', 'संपर्क करें', 1,
+      'कोई खबर, सुधार या विज्ञापन से जुड़ा सवाल है? हमें फ़ोन करें, लिखें या नीचे दिए फ़ॉर्म से संदेश भेजें।'],
+  ] : [
+    ['about', 'About us', 0,
+      `**${site}** is a news website that brings you the news of your area every day.\n\n## What you will find here\n\n- Local news as it happens\n- State, national, business and sports updates\n- Photos and videos with the stories\n\n## Our promise\n\nWe check facts before we publish and correct mistakes openly. If you find an error in a story, tell us through the contact page.`],
+    ['contact', 'Contact', 1,
+      'Have a news tip, a correction or a question about advertising? Call or write to us, or send a message with the form below.'],
+  ];
+  let sort = 1;
+  for (const [slug, title, form, body] of defaults) {
+    if (!(await db.get('SELECT id FROM pages WHERE slug = ?', [slug]))) {
+      await db.run('INSERT INTO pages(slug, title, body, show_form, sort, updated_at) VALUES(?, ?, ?, ?, ?, ?)', [slug, title, body, form, sort, now()]);
+    }
+    sort++;
+  }
+  clearPages();
+  await setSetting('_pages_seeded', '1');
+}
 async function isInstalled() {
   return Number((await db.get('SELECT COUNT(*) AS n FROM users')).n) > 0;
 }
@@ -66,6 +104,13 @@ async function loadSecret() {
   secret = (await getSettings())._secret;
 }
 const sign = (text) => crypto.createHmac('sha256', secret).update(text).digest('base64url');
+/** A signed time stamp placed in public forms; lets us tell how long ago the form was opened. */
+const formToken = () => { const t = Math.floor(Date.now() / 1000); return `${t}.${sign('form:' + t)}`; };
+function formTokenAge(token) {
+  const [t, sig] = String(token || '').split('.');
+  if (!/^\d{9,11}$/.test(t || '') || !sig || !safeEqual(sig, sign('form:' + t))) return null;
+  return Math.floor(Date.now() / 1000) - Number(t);
+}
 function safeEqual(a, b) {
   const x = Buffer.from(String(a));
   const y = Buffer.from(String(b));
@@ -140,6 +185,7 @@ async function buildCtx(req) {
     s, lang, tz, t, origin,
     now: now(),
     cats: await getCategories(),
+    pages: await getPages(),
     set: (k, d = '') => (s[k] ? s[k] : d),
     date: (ts, withTime = true, withDay = false) => fmtDate(Number(ts), tz, lang, withTime, withDay),
     ago: (ts) => {
@@ -278,6 +324,7 @@ async function deleteImage(name) {
 module.exports = {
   now, raw, html, esc, fmt, Raw,
   getSettings, setSetting, getCategories, clearCategories, isInstalled,
+  getPages, clearPages, validSlug, ensurePages, formToken, formTokenAge,
   loadSecret, safeEqual,
   ZONES, toLocalInput, fromLocalInput, startOfToday, fmtDate, isoDate, buildCtx,
   VISIBLE, fetchPosts, countPosts, likeValue,

@@ -49,7 +49,7 @@ ${o.noindex ? raw('<meta name="robots" content="noindex">') : ''}
 <meta name="theme-color" content="#1f2c7c">
 <link rel="alternate" type="application/rss+xml" title="${site}" href="/feed.xml">
 <link rel="stylesheet" href="/assets/css/fonts.css?v=1">
-<link rel="stylesheet" href="/assets/css/style.css?v=3">
+<link rel="stylesheet" href="/assets/css/style.css?v=4">
 ${o.head || ''}
 </head>
 <body>
@@ -58,6 +58,7 @@ ${o.head || ''}
   <div class="wrap topbar-in">
     <time datetime="${isoDate(ctx.now).slice(0, 10)}" class="today">${ctx.date(ctx.now, false, true)}</time>
     <span class="topbar-links">
+      ${ctx.pages.map((pg) => html`<a class="topbar-page" href="/${pg.slug}"${o.activePage === pg.id ? raw(' aria-current="page"') : ''}>${pg.title}</a>`)}
       ${social.map(([name, link]) => html`<a href="${link}" target="_blank" rel="noopener">${name}</a>`)}
       <a href="/feed.xml">RSS</a>
     </span>
@@ -102,17 +103,19 @@ ${content}
       <h2>${ctx.t('categories')}</h2>
       <ul class="foot-cols">${ctx.cats.map((c) => html`<li><a href="${catUrl(c.id)}">${c.name}</a></li>`)}</ul>
     </div>
-    ${hasContact ? html`<div>
-      <h2>${ctx.t('contact')}</h2>
+    ${ctx.pages.length ? html`<div>
+      <h2>${ctx.t('info')}</h2>
+      <ul>${ctx.pages.map((pg) => html`<li><a href="/${pg.slug}">${pg.title}</a></li>`)}</ul>
+    </div>` : ''}
+    ${hasContact || social.length ? html`<div>
+      ${hasContact ? html`<h2>${ctx.t('contact')}</h2>
       <ul>
         ${ctx.set('contact_phone') ? html`<li><a href="tel:${ctx.s.contact_phone.replace(/[^0-9+]/g, '')}">${ctx.s.contact_phone}</a></li>` : ''}
         ${ctx.set('contact_email') ? html`<li><a href="mailto:${ctx.s.contact_email}">${ctx.s.contact_email}</a></li>` : ''}
         ${ctx.set('address') ? html`<li>${lines(ctx.s.address)}</li>` : ''}
-      </ul>
-    </div>` : ''}
-    ${social.length ? html`<div>
-      <h2>${ctx.t('follow')}</h2>
-      <ul>${social.map(([name, link]) => html`<li><a href="${link}" target="_blank" rel="noopener">${name}</a></li>`)}</ul>
+      </ul>` : ''}
+      ${social.length ? html`<h2${hasContact ? raw(' class="foot-gap"') : ''}>${ctx.t('follow')}</h2>
+      <ul class="foot-social">${social.map(([name, link]) => html`<li><a href="${link}" target="_blank" rel="noopener">${name}</a></li>`)}</ul>` : ''}
     </div>` : ''}
   </div>
   <div class="foot-base">
@@ -391,6 +394,67 @@ ${preview ? html`<div class="preview-bar"><div class="wrap">${ctx.t('preview')}<
   }, content);
 }
 
+/** Box with the phone, email, address and social links from Admin > Settings. */
+function contactBox(ctx) {
+  const social = [['Facebook', ctx.s.facebook_url], ['YouTube', ctx.s.youtube_url], ['Instagram', ctx.s.instagram_url], ['WhatsApp', ctx.s.whatsapp_url]].filter((x) => x[1]);
+  const phone = ctx.set('contact_phone');
+  const email = ctx.set('contact_email');
+  const address = ctx.set('address');
+  if (!phone && !email && !address && !social.length) return '';
+  return html`
+  <section class="side-box">
+    ${secHead(ctx.t('contact_details'))}
+    <dl class="info">
+      ${phone ? html`<div><dt>${ctx.t('phone')}</dt><dd><a href="tel:${phone.replace(/[^0-9+]/g, '')}">${phone}</a></dd></div>` : ''}
+      ${email ? html`<div><dt>${ctx.t('email')}</dt><dd><a href="mailto:${email}">${email}</a></dd></div>` : ''}
+      ${address ? html`<div><dt>${ctx.t('address')}</dt><dd>${lines(address)}</dd></div>` : ''}
+      ${social.length ? html`<div><dt>${ctx.t('follow')}</dt><dd class="info-links">${social.map(([name, link]) => html`<a href="${link}" target="_blank" rel="noopener">${name}</a>`)}</dd></div>` : ''}
+    </dl>
+  </section>`;
+}
+
+function staticPage(ctx, d) {
+  const { page, sent, errors, values, token, moreNews } = d;
+  const content = html`
+<header class="cat-hero page-hero">
+  <div class="wrap">
+    <p class="crumbs"><a href="/">${ctx.t('home')}</a><span aria-hidden="true">/</span>${page.title}</p>
+    <h1>${page.title}</h1>
+  </div>
+</header>
+<div class="wrap columns">
+  <article class="col-main">
+    ${page.body.trim() !== '' ? html`<div class="story-body">${raw(renderBody(page.body))}</div>` : ''}
+    ${page.show_form ? html`<section class="form-card" id="message">
+      ${secHead(ctx.t('send_title'))}
+      ${sent ? html`<p class="note note-ok" role="status">${ctx.t('sent')}</p>` : ''}
+      ${errors.map((e) => html`<p class="note note-err" role="alert">${e}</p>`)}
+      <form method="post" action="/${page.slug}#message">
+        <input type="hidden" name="t" value="${token}">
+        <p class="hp" aria-hidden="true"><label>Website <input name="website" tabindex="-1" autocomplete="off"></label></p>
+        <div class="form-two">
+          <label>${ctx.t('your_name')}
+            <input name="name" value="${values.name}" maxlength="80" required autocomplete="name">
+          </label>
+          <label>${ctx.t('your_contact')}
+            <input name="contact" value="${values.contact}" maxlength="120" required>
+          </label>
+        </div>
+        <label>${ctx.t('your_message')}
+          <textarea name="message" rows="6" maxlength="2000" required>${values.message}</textarea>
+        </label>
+        <button class="btn" type="submit">${ctx.t('send')}</button>
+      </form>
+    </section>` : ''}
+  </article>
+  <aside class="col-side">
+    ${contactBox(ctx)}
+    ${moreNewsBox(ctx, moreNews)}
+  </aside>
+</div>`;
+  return layout(ctx, { title: page.title, description: plainExcerpt(page.body, 160), canonical: `${ctx.origin}/${page.slug}`, activePage: page.id }, content);
+}
+
 function notFoundPage(ctx) {
   const content = html`<div class="wrap notice"><h1>${ctx.t('not_found_title')}</h1><p>${ctx.t('not_found_text')}</p>
 <p><a class="btn" href="/">${ctx.t('back_home')}</a></p></div>`;
@@ -427,8 +491,9 @@ ${items}
 function sitemapXml(ctx, posts) {
   const urls = [`  <url><loc>${xml(ctx.origin + '/')}</loc></url>`]
     .concat(ctx.cats.map((c) => `  <url><loc>${xml(ctx.origin + catUrl(c.id))}</loc></url>`))
+    .concat(ctx.pages.map((pg) => `  <url><loc>${xml(`${ctx.origin}/${pg.slug}`)}</loc></url>`))
     .concat(posts.map((p) => `  <url><loc>${xml(ctx.origin + postUrl(p))}</loc><lastmod>${isoDate(p.updated_at)}</lastmod></url>`));
   return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.join('\n')}\n</urlset>\n`;
 }
 
-module.exports = { homePage, categoryPage, searchPage, articlePage, notFoundPage, feedXml, sitemapXml, postUrl };
+module.exports = { homePage, categoryPage, searchPage, articlePage, staticPage, notFoundPage, feedXml, sitemapXml, postUrl };

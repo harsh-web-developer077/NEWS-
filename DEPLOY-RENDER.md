@@ -42,7 +42,30 @@ Blueprint na chale to haath se bhi ho jata hai: **New > Web Service** > reposito
 
 ## Pehle se site chal rahi hai aur sirf naya design chahiye?
 
-GitHub repository me purani files ki jagah is zip ki files upload kar do (same naam wali files replace ho jayengi). Render apne aap dobara deploy karega. Database wahi rehta hai, isliye purani khabrein aur login waise hi rahenge.
+GitHub repository me purani files ki jagah is zip ki files upload kar do (same naam wali files replace ho jayengi). Render apne aap dobara deploy karega. Database wahi rehta hai, isliye purani khabrein aur login waise hi rahenge. Naye features ke liye jo tables chahiye (jaise Pages aur Messages) wo pehli baar chalte hi apne aap ban jati hain, aur About/Contact pages bhi apne aap jud jate hain.
+
+## Email par copy (optional, free)
+
+Website apni khabrein hamesha database (Neon) se padhti hai. Email **doosri, safe copy** ke liye hai:
+
+- har khabar publish hote hi aapki email par aa jati hai (main photo attach ke saath)
+- poori backup file hafte me ek baar apne aap aati hai
+- Contact page ke messages bhi email par aate hain
+
+Render ka Free plan seedha email bhejna block karta hai, isliye ek free email service **Resend** lagti hai:
+
+1. resend.com par account banao, **usi email se jis par copies chahiye** (jaise aapka Gmail). Free plan me bina apna domain jode email sirf usi address par ja sakti hai jisse account bana hai.
+2. Resend me **API Keys** kholo, **Create API Key** dabao aur key copy kar lo (`re_` se shuru hoti hai). Ye sirf ek baar dikhti hai.
+3. Render me apni service > **Environment** > **Add Environment Variable**: naam `RESEND_API_KEY`, value me wo key. **Save** dabao; site apne aap restart hogi.
+4. Site ke Admin > **Backup** me "Your email address" me apna address likh kar **Save email choices** dabao.
+5. **Email a backup now** dabao. Inbox me backup file wali email aani chahiye. Pehli baar na dikhe to **Spam** folder dekho aur "Not spam" kar do.
+
+Dhyan rahe:
+
+- Free plan me din ki 100 aur mahine ki 3,000 emails ki limit hai; ek news site ke liye kaafi hai.
+- Backup email me photos tab tak saath aati hain jab tak sab photos milakar lagbhag 12 MB se kam hain. Uske baad email me sirf khabrein aati hain, aur photos wali file Admin > Backup se download karni hoti hai.
+- Email on karne se **pehle** ki khabrein ek-ek karke nahi bheji jati; wo backup file ke andar hoti hain.
+- Key kabhi GitHub par mat daalna, sirf Render ke Environment me.
 
 ## Free plan ki do baatein
 

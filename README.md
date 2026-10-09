@@ -24,7 +24,8 @@ Photos bhi database me hi rehti hain, isliye alag se upload folder ya image host
   - **Download stories**: saari khabrein ek chhoti file me (email me attach ho jati hai).
   - **Download stories and photos**: sab kuch ek file me (badi ho to Google Drive me rakhein).
   - **Restore**: backup file wapas upload karo to jo khabrein/photos site par nahi hain wo jud jati hain. Kuch delete ya overwrite nahi hota.
-- Hafte me ek baar backup download karke khud ko email kar dein ya Drive me rakh dein.
+- **Apne aap email par copy**: Admin > Backup > "Copies to your email" me apna email daal do. Phir har khabar publish hote hi email par aati hai, aur poori backup file hafte me ek baar. Iske liye ek free Resend account chahiye; steps `DEPLOY-RENDER.md` ke "Email par copy" me hain.
+- Email set na karo to hafte me ek baar backup download karke khud ko email kar dein ya Drive me rakh dein.
 
 ## Roz khabar kaise daalein
 
@@ -49,10 +50,21 @@ Side ke options:
 - **Save as draft**: abhi public nahi hogi, baad me poori karke Publish karein.
 - **Publish date and time**: aage ka time chunoge to khabar us time par apne aap publish hogi.
 
+## About, Contact aur doosre pages
+
+- Site banate hi do pages apne aap ban jate hain: **About us** (`/about`) aur **Contact** (`/contact`). Inke link site ke sabse upar wali patti aur footer me dikhte hain.
+- Text badalne ke liye: Admin > **Pages** > Edit. Wahi editor hai jo khabar me hai (Bold, Heading, List, Photo...).
+- Naya page (jaise "Advertise with us", "Privacy policy") banane ke liye: Admin > Pages > **Add page**.
+- Phone, email, address aur social links har page ke side me apne aap dikhte hain; ye Admin > **Settings** se aate hain, isliye wahan zaroor bharein.
+- **Contact form**: Contact page par padhne wale apna naam, phone/email aur message bhej sakte hain. Ye messages Admin > **Messages** me aate hain (naye message ki ginti menu me dikhti hai). Kisi bhi page par form dikhana ho to us page me "Show a message form on this page" tick karein.
+- Messages email par nahi jaate, sirf admin panel me dikhte hain; din me ek baar Messages dekh lein.
+
 ## Admin panel me kya-kya hai
 
 - **All news**: saari khabrein, edit / delete / preview, views ki ginti, search aur filter.
 - **Categories**: menu ke sections jodna, naam badalna, order badalna.
+- **Pages**: About, Contact jaise pages banana aur badalna.
+- **Messages**: Contact form se aaye messages padhna, read mark karna, delete karna.
 - **Settings**: site ka naam, tagline, bhasha (Hindi/English), contact, social links, password badalna.
 - **Backup**: saari khabrein aur photos ek file me download karna, aur file se wapas laana.
 
@@ -62,6 +74,7 @@ Side ke options:
 - **Category-wise section**: home page par har category (Local, Sports...) ka apna block, apne rang ke saath
 - Har category ka apna rang poori site par (menu, tags, headings)
 - Category pages, search, har khabar ka apna page (`/news/12`)
+- About aur Contact pages, message form ke saath
 - WhatsApp / Facebook / X share buttons aur link copy
 - Mobile par poori tarah chalti hai, Hindi fonts andar hi hain
 - `/sitemap.xml` (Google Search Console me submit karein), `/feed.xml` (RSS), `/robots.txt`
@@ -82,6 +95,7 @@ Data `data/news.sqlite` me banega.
 | `DATABASE_URL` | PostgreSQL connection string. Set ho to data wahan jata hai. |
 | `DATA_DIR` | SQLite mode me file ka folder (default `./data`). Disk wale server par disk ka path. |
 | `PORT` | Port (default 3000; Render khud deta hai). |
+| `RESEND_API_KEY` | Email par copies bhejne ke liye Resend ki key. Na ho to email feature band rehta hai. |
 | `ADMIN_PASSWORD_RESET` | Password bhoolne par: naya password yahan daal kar restart karo, phir hata do. |
 
 ## Rang ya shabd badalna
@@ -98,6 +112,8 @@ src/core.js            login, cookies, dates, photos
 src/render.js          khabar ke text ko HTML me badalna
 src/views.js           public pages
 src/admin-views.js     admin pages
+src/backup.js          backup file banana
+src/mail.js            email par copies bhejna
 src/lang.js            Hindi / English shabd
 public/assets/         CSS, JS, fonts
 render.yaml            Render ka setup

@@ -49,6 +49,21 @@
     });
   }
 
+  // Page editor: suggest the address from the title (English titles) and show it live.
+  var slug = document.getElementById('page-slug');
+  if (slug) {
+    var title = document.getElementById('page-title');
+    var show = document.getElementById('slug-show');
+    var auto = slug.hasAttribute('data-auto');
+    var clean = function (t) { return t.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60); };
+    title.addEventListener('input', function () {
+      if (!auto) return;
+      slug.value = clean(title.value);
+      show.textContent = slug.value || 'address';
+    });
+    slug.addEventListener('input', function () { auto = false; show.textContent = slug.value || 'address'; });
+  }
+
   var tools = document.querySelector('.tools');
   if (!tools) return;
   var area = document.getElementById(tools.getAttribute('data-for'));

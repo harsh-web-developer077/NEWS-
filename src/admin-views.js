@@ -19,7 +19,7 @@ function layout(a, title, active, content, bare = false) {
 <meta name="robots" content="noindex, nofollow">
 <title>${title} | ${site} admin</title>
 <link rel="stylesheet" href="/assets/css/fonts.css?v=1">
-<link rel="stylesheet" href="/assets/css/admin.css?v=3">
+<link rel="stylesheet" href="/assets/css/admin.css?v=5">
 </head>
 <body${bare ? raw(' class="bare"') : ''}>
 ${bare ? '' : html`<header class="bar">
@@ -29,6 +29,8 @@ ${bare ? '' : html`<header class="bar">
       <a href="/admin"${cur(active === 'news')}>All news</a>
       <a href="/admin/post"${cur(active === 'add')}>Add news</a>
       <a href="/admin/categories"${cur(active === 'categories')}>Categories</a>
+      <a href="/admin/pages"${cur(active === 'pages')}>Pages</a>
+      <a href="/admin/messages"${cur(active === 'messages')}>Messages${a.unread ? html` <b class="count-badge">${a.unread}</b>` : ''}</a>
       <a href="/admin/settings"${cur(active === 'settings')}>Settings</a>
       <a href="/admin/backup"${cur(active === 'backup')}>Backup</a>
     </nav>
@@ -43,7 +45,7 @@ ${!bare && a.warning ? html`<div class="flash flash-warn" role="alert">${a.warni
 ${(a.flash || []).map(([type, msg]) => html`<div class="flash flash-${type === 'error' ? 'error' : 'ok'}" role="status">${msg}</div>`)}
 ${content}
 </main>
-<script src="/assets/js/admin.js?v=2" defer></script>
+<script src="/assets/js/admin.js?v=3" defer></script>
 </body>
 </html>`.toString();
 }
@@ -370,6 +372,35 @@ function backupPage(a, d) {
   </div>
 </div>
 <div class="card">
+  <h2>Copies to your email</h2>
+  <p class="para">The website always reads its news from the database. Email is a second, safe copy: each story is emailed to you when it is published, and the full backup file arrives once a week.</p>
+  ${d.mail.hasKey ? html`<p class="para"><b>Email is switched on.</b> ${d.mail.email ? '' : 'Type your address below to start.'}
+    ${d.mail.lastBackup ? `Last backup emailed on ${a.ctx.date(d.mail.lastBackup)}.` : ''} ${d.mail.copies ? `${num(d.mail.copies)} ${d.mail.copies === 1 ? 'story' : 'stories'} emailed so far.` : ''}</p>` : html`<div class="steps">
+    <p><b>Email is not switched on yet.</b> It needs a free account with the email service Resend:</p>
+    <ol>
+      <li>Open resend.com and create an account <b>with the same email address where you want the copies</b>.</li>
+      <li>In Resend, open “API Keys”, create a key and copy it (it starts with re_).</li>
+      <li>In Render, open this site &gt; Environment, add a variable named <b>RESEND_API_KEY</b> with that key as its value, and save.</li>
+    </ol>
+    <p>The site restarts on its own. Then come back to this page.</p>
+  </div>`}
+  <form method="post" action="/admin/backup/email" class="mail-form">
+    ${csrfField(a)}
+    <label>Your email address
+      <input name="backup_email" type="email" value="${d.mail.email}" maxlength="120" placeholder="name@gmail.com" autocomplete="email">
+    </label>
+    <label class="check"><input type="checkbox" name="mail_stories" value="1"${chk(d.mail.stories)}> <span>Email me every story when it is published <small>with its main photo attached</small></span></label>
+    <label class="check"><input type="checkbox" name="mail_weekly" value="1"${chk(d.mail.weekly)}> <span>Email me the full backup file every week <small>photos are included while they fit in an email</small></span></label>
+    <label class="check"><input type="checkbox" name="mail_messages" value="1"${chk(d.mail.messages)}> <span>Email me messages from the Contact page</span></label>
+    <button class="btn" type="submit">Save email choices</button>
+  </form>
+  <form method="post" action="/admin/backup/email-now" class="mail-now">
+    ${csrfField(a)}
+    <button class="btn btn-quiet" type="submit">Email a backup now</button>
+    <span class="hint">Sends the backup file to your address straight away. Use it once to check that email works.</span>
+  </form>
+</div>
+<div class="card">
   <h2>Download a backup</h2>
   <p class="para">A backup is one file with a copy of everything. Keep it outside this site: email it to yourself or put it in Google Drive. Download a new one every week or so.</p>
   <div class="choices">
@@ -396,8 +427,122 @@ function backupPage(a, d) {
 </div>`);
 }
 
+function pagesPage(a, rows) {
+  return layout(a, 'Pages', 'pages', html`
+<div class="head">
+  <h1>Pages</h1>
+  <a class="btn" href="/admin/page">Add page</a>
+</div>
+<p class="hint lead-hint">Pages hold information that does not change every day, such as About us and Contact. Links to them appear at the top and bottom of the website.</p>
+${!rows.length ? html`<div class="card empty"><p>No pages yet. Add an About or Contact page for your readers.</p><a class="btn" href="/admin/page">Add page</a></div>` : html`<div class="card table-card">
+<table class="list">
+  <thead><tr><th>Title</th><th>Address</th><th>Contact form</th><th class="num">Order</th><th></th></tr></thead>
+  <tbody>
+  ${rows.map((p) => html`<tr>
+    <td class="title"><a href="/admin/page/${p.id}">${p.title}</a></td>
+    <td data-label="Address">/${p.slug}</td>
+    <td data-label="Contact form">${p.show_form ? 'Yes' : 'No'}</td>
+    <td class="num" data-label="Order">${p.sort}</td>
+    <td class="acts">
+      <a href="/admin/page/${p.id}">Edit</a>
+      <a href="/${p.slug}" target="_blank" rel="noopener">View</a>
+      <form method="post" action="/admin/pages/delete" data-confirm="Delete the page “${p.title}”? This cannot be undone.">
+        ${csrfField(a)}
+        <input type="hidden" name="id" value="${p.id}">
+        <button type="submit" class="link danger">Delete</button>
+      </form>
+    </td>
+  </tr>`)}
+  </tbody>
+</table>
+</div>`}`);
+}
+
+function pageEditPage(a, page, errors, isNew) {
+  return layout(a, isNew ? 'Add page' : 'Edit page', 'pages', html`
+<div class="head">
+  <h1>${isNew ? 'Add page' : 'Edit page'}</h1>
+  ${isNew ? '' : html`<a class="btn btn-quiet" href="/${page.slug}" target="_blank" rel="noopener">View on website</a>`}
+</div>
+${errors.map((e) => html`<div class="flash flash-error">${e}</div>`)}
+<form method="post" action="/admin/page${isNew ? '' : '/' + page.id}" class="editor">
+  ${csrfField(a)}
+  <div class="editor-main card">
+    <label>Page title
+      <input name="title" id="page-title" value="${page.title}" maxlength="80" required class="big"${isNew ? raw(' autofocus') : ''}>
+    </label>
+    <div class="field">
+      <label for="body">Page text</label>
+      <div class="tools" data-for="body" data-upload="/admin/upload" data-csrf="${a.csrf}">
+        <button type="button" data-wrap="**" title="Bold"><b>Bold</b></button>
+        <button type="button" data-line="## " title="Sub-heading">Heading</button>
+        <button type="button" data-line="&gt; " title="Quote">Quote</button>
+        <button type="button" data-line="- " title="Bullet list">List</button>
+        <button type="button" data-tool="link">Link</button>
+        <button type="button" data-tool="photo">Photo</button>
+        <button type="button" data-tool="youtube">YouTube</button>
+        <span class="tools-note" aria-live="polite"></span>
+      </div>
+      <textarea id="body" name="body" rows="16">${page.body}</textarea>
+      <p class="hint">Leave an empty line between paragraphs. Phone, email and address are added to the page automatically from Settings.</p>
+    </div>
+  </div>
+  <div class="editor-side">
+    <div class="card">
+      <button class="btn btn-wide" type="submit">${isNew ? 'Publish page' : 'Save changes'}</button>
+    </div>
+    <div class="card">
+      <label>Page address <small>small English letters, numbers and hyphens</small>
+        <input name="slug" id="page-slug" value="${page.slug}" maxlength="60" required autocapitalize="none" pattern="[a-z0-9][a-z0-9\\-]{1,58}"${isNew ? raw(' data-auto="1"') : ''}>
+      </label>
+      <p class="hint">The page opens at yoursite.com/<b id="slug-show">${page.slug || 'address'}</b></p>
+    </div>
+    <div class="card">
+      <label class="check"><input type="checkbox" name="show_form" value="1"${chk(page.show_form)}> <span>Show a message form on this page <small>readers can write to you; messages arrive in Messages</small></span></label>
+      <label>Order <small>smaller numbers come first in the links</small>
+        <input name="sort" type="number" min="0" max="999" value="${page.sort}">
+      </label>
+    </div>
+  </div>
+</form>`);
+}
+
+function messagesPage(a, d) {
+  const { rows, page, pages, total } = d;
+  return layout(a, 'Messages', 'messages', html`
+<div class="head"><h1>Messages</h1></div>
+<p class="hint lead-hint">Messages that readers send from the form on your Contact page. ${total ? `${num(total)} in all.` : ''}</p>
+${!rows.length ? html`<div class="card empty"><p>No messages yet. When a reader writes to you from the Contact page, it shows here.</p></div>` : html`
+${rows.map((m) => html`<article class="card msg${m.is_read ? '' : ' msg-new'}">
+  <header>
+    <div><b>${m.name}</b> <span class="msg-contact">${m.contact}</span>${m.is_read ? '' : raw(' <span class="badge badge-sched">New</span>')}</div>
+    <time>${a.ctx.date(m.created_at)}</time>
+  </header>
+  <p>${m.body.split(/\r?\n/).map((l, i) => html`${i ? raw('<br>') : ''}${l}`)}</p>
+  <footer>
+    <form method="post" action="/admin/messages">
+      ${csrfField(a)}
+      <input type="hidden" name="id" value="${m.id}">
+      <input type="hidden" name="back" value="${page}">
+      <button class="link" type="submit" name="action" value="${m.is_read ? 'unread' : 'read'}">${m.is_read ? 'Mark as new' : 'Mark as read'}</button>
+    </form>
+    <form method="post" action="/admin/messages" data-confirm="Delete this message?">
+      ${csrfField(a)}
+      <input type="hidden" name="id" value="${m.id}">
+      <input type="hidden" name="back" value="${page}">
+      <button class="link danger" type="submit" name="action" value="delete">Delete</button>
+    </form>
+  </footer>
+</article>`)}
+${pages > 1 ? html`<nav class="pages">
+  ${page > 1 ? html`<a class="btn btn-quiet" href="/admin/messages${page > 2 ? '?page=' + (page - 1) : ''}">Newer</a>` : ''}
+  <span>Page ${page} of ${pages}</span>
+  ${page < pages ? html`<a class="btn btn-quiet" href="/admin/messages?page=${page + 1}">Older</a>` : ''}
+</nav>` : ''}`}`);
+}
+
 function messagePage(a, title, text) {
   return layout(a, title, '', html`<div class="card auth"><h1>${title}</h1><p class="hint">${text}</p><p class="hint"><a href="/admin">Back to the admin panel</a></p></div>`, true);
 }
 
-module.exports = { setupPage, loginPage, listPage, postPage, categoriesPage, settingsPage, backupPage, messagePage };
+module.exports = { setupPage, loginPage, listPage, postPage, categoriesPage, settingsPage, backupPage, pagesPage, pageEditPage, messagesPage, messagePage };

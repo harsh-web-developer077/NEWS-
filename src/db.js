@@ -88,6 +88,15 @@ async function migrate() {
       name TEXT PRIMARY KEY, mime TEXT NOT NULL, data ${BLOB} NOT NULL, size INTEGER NOT NULL, created_at BIGINT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS login_attempts (who TEXT NOT NULL, ts BIGINT NOT NULL);
+    CREATE TABLE IF NOT EXISTS pages (
+      id ${ID}, slug TEXT NOT NULL UNIQUE, title TEXT NOT NULL, body TEXT NOT NULL DEFAULT '',
+      show_form INTEGER NOT NULL DEFAULT 0, sort INTEGER NOT NULL DEFAULT 0, updated_at BIGINT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS mailed_posts (post_id INTEGER PRIMARY KEY, ts BIGINT NOT NULL);
+    CREATE TABLE IF NOT EXISTS messages (
+      id ${ID}, name TEXT NOT NULL, contact TEXT NOT NULL, body TEXT NOT NULL,
+      is_read INTEGER NOT NULL DEFAULT 0, created_at BIGINT NOT NULL
+    );
   `);
 }
 

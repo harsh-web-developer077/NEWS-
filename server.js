@@ -16,6 +16,8 @@ const db = require('./src/db');
 const core = require('./src/core');
 const V = require('./src/views');
 const A = require('./src/admin-views');
+const backup = require('./src/backup');
+const mail = require('./src/mail');
 const { html, now, VISIBLE, fetchPosts, countPosts } = core;
 
 const PORT = Number(process.env.PORT) || 3000;
@@ -43,6 +45,7 @@ app.use(async (req, res, next) => {
   if (!installed) installed = await core.isInstalled();
   if (!installed && !req.path.startsWith('/admin/setup')) return res.redirect('/admin/setup');
   req.ctx = await core.buildCtx(req);
+  mail.seen(req.ctx.origin);           // lets due email copies go out; never waits for them
   next();
 });
 
@@ -200,7 +203,7 @@ function pageArgs(req, res) {
   }
   const temporary = process.env.RENDER && db.kind === 'sqlite' && !process.env.DATA_DIR;
   return {
-    ctx: req.ctx, csrf: req.csrf, user: req.user, flash: waiting,
+    ctx: req.ctx, csrf: req.csrf, user: req.user, flash: waiting, unread: req.unread || 0,
     warning: temporary ? 'This server does not keep files: news and photos added now will be lost when it restarts. Add a DATABASE_URL to keep them (see DEPLOY-RENDER.md).' : '',
   };
 }
@@ -265,6 +268,7 @@ admin.post('/setup', checkCsrf, async (req, res) => {
   await core.setSetting('site_name', v.site_name);
   await core.setSetting('lang', v.lang);
   if (!req.ctx.set('default_author')) await core.setSetting('default_author', v.username);
+  await core.ensurePages();
 
   core.setCookie(req, res, 'ns', core.makeSession(user));
   flash(req, res, fresh ? 'Your site is ready. Add your first story from “Add news”.' : 'New login created. Your news and settings are unchanged.');
@@ -279,7 +283,7 @@ admin.get('/login', async (req, res) => {
 admin.post('/login', checkCsrf, async (req, res) => {
   const username = str(req.body.username, 40);
   const keys = ['ip:' + req.ip, 'user:' + username.toLowerCase()];
-  await db.run('DELETE FROM login_attempts WHERE ts < ?', [now() - 900]);
+  await db.run("DELETE FROM login_attempts WHERE ts < ? AND who NOT LIKE 'msg:%'", [now() - 900]);
   // Counted per address and per username, so changing one of them does not help a guesser.
   const count = async (who) => Number((await db.get('SELECT COUNT(*) AS n FROM login_attempts WHERE who = ?', [who])).n);
   if (Math.max(await count(keys[0]), await count(keys[1])) >= 8) {
@@ -302,6 +306,11 @@ admin.post('/logout', checkCsrf, (req, res) => {
 });
 
 admin.use(requireLogin);
+// Number shown next to "Messages" in the admin menu.
+admin.use(async (req, res, next) => {
+  req.unread = Number((await db.get('SELECT COUNT(*) AS n FROM messages WHERE is_read = 0')).n);
+  next();
+});
 
 /* ----- All news ----- */
 admin.get('/', async (req, res) => {
@@ -435,6 +444,7 @@ async function savePost(req, res) {
   if (post.status === 'draft') flash(req, res, 'Draft saved. It is not on the website yet.');
   else if (post.published_at > t) flash(req, res, `Scheduled. It will appear on the website on ${ctx.date(post.published_at)}.`);
   else flash(req, res, 'Published. The story is live on the website.');
+  mail.sweep();                         // email copy of a newly published story, in the background
   res.redirect('/admin/post/' + id);
 }
 admin.post('/post', photoField('image'), checkCsrf, savePost);
@@ -526,41 +536,53 @@ admin.post('/password', checkCsrf, async (req, res) => {
 });
 
 /* ----- Backup: download everything as one file, and put it back ----- */
-const SETTING_KEYS = ['site_name', 'tagline', 'lang', 'about', 'default_author', 'contact_phone', 'contact_email', 'address', 'per_page', 'timezone',
-  'facebook_url', 'youtube_url', 'instagram_url', 'whatsapp_url', 'site_url'];
+const SETTING_KEYS = backup.SETTING_KEYS;
 
-admin.get('/backup', async (req, res) => {
-  const img = await db.get('SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS bytes FROM images');
-  res.send(A.backupPage(pageArgs(req, res), { kind: db.kind, posts: await countPosts('1 = 1'), images: Number(img.n), bytes: Number(img.bytes) }));
-});
+async function backupPageData() {
+  const cfg = await mail.config();
+  return {
+    kind: db.kind, ...(await backup.stats()),
+    mail: {
+      hasKey: cfg.hasKey, email: cfg.email, stories: cfg.stories, weekly: cfg.weekly, messages: cfg.messages,
+      lastBackup: Number(cfg.s._last_backup_mail || 0),
+      copies: Number((await db.get('SELECT COUNT(*) AS n FROM mailed_posts')).n),
+    },
+  };
+}
+admin.get('/backup', async (req, res) => res.send(A.backupPage(pageArgs(req, res), await backupPageData())));
 
-// The file has one JSON record per line, so even a large backup never has to fit in memory at once.
 admin.get('/backup/download', async (req, res) => {
   const withPhotos = req.query.photos === '1';
-  const day = core.toLocalInput(now(), req.ctx.tz).slice(0, 10);
-  res.set({
-    'Content-Type': 'text/plain; charset=utf-8',
-    'Content-Disposition': `attachment; filename="news-backup-${day}${withPhotos ? '-with-photos' : ''}.txt"`,
-  });
-  const line = (record) => new Promise((resolve) => {
-    if (res.write(JSON.stringify(record) + '\n')) resolve(); else res.once('drain', resolve);
-  });
-  await line({ type: 'news-backup', version: 1, created: new Date().toISOString(), site: req.ctx.set('site_name', 'News'), photos: withPhotos });
-  for (const k of SETTING_KEYS) if (req.ctx.s[k]) await line({ type: 'setting', name: k, val: req.ctx.s[k] });
-  for (const c of await db.all('SELECT * FROM categories ORDER BY sort, name')) await line({ type: 'category', id: c.id, name: c.name, sort: c.sort });
-  for (let last = 0; ;) {
-    const batch = await db.all('SELECT * FROM posts WHERE id > ? ORDER BY id LIMIT 100', [last]);
-    if (!batch.length) break;
-    for (const p of batch) await line({ type: 'post', ...p });
-    last = batch[batch.length - 1].id;
-  }
-  if (withPhotos) {
-    for (const { name } of await db.all('SELECT name FROM images ORDER BY created_at, name')) {
-      const row = await db.get('SELECT mime, data FROM images WHERE name = ?', [name]);
-      if (row) await line({ type: 'image', name, mime: row.mime, data: Buffer.from(row.data).toString('base64') });
-    }
+  res.set({ 'Content-Type': 'text/plain; charset=utf-8', 'Content-Disposition': `attachment; filename="${backup.fileName(req.ctx.tz, withPhotos)}"` });
+  for await (const record of backup.records(withPhotos)) {
+    if (!res.write(JSON.stringify(record) + '\n')) await new Promise((resolve) => res.once('drain', resolve));
   }
   res.end();
+});
+
+/* ----- Copies to the owner's email ----- */
+admin.post('/backup/email', checkCsrf, async (req, res) => {
+  const email = str(req.body.backup_email, 120);
+  if (email !== '' && !mail.validEmail(email)) flash(req, res, 'That email address does not look right. Check it and save again.', 'error');
+  else {
+    await core.setSetting('backup_email', email);
+    await core.setSetting('mail_stories', req.body.mail_stories ? '1' : '0');
+    await core.setSetting('mail_weekly', req.body.mail_weekly ? '1' : '0');
+    await core.setSetting('mail_messages', req.body.mail_messages ? '1' : '0');
+    flash(req, res, email ? 'Email choices saved.' : 'Email address removed. No copies will be sent.');
+  }
+  res.redirect('/admin/backup');
+});
+admin.post('/backup/email-now', checkCsrf, async (req, res) => {
+  const cfg = await mail.config();
+  if (!cfg.hasKey) flash(req, res, 'Email is not set up on this server yet. Follow the steps shown on this page first.', 'error');
+  else if (!cfg.ready) flash(req, res, 'Type your email address and save it first.', 'error');
+  else {
+    const r = await mail.mailBackup(cfg);
+    if (r.ok) flash(req, res, `Backup sent to ${cfg.email} with ${r.stories} stories${r.withPhotos ? ' and all photos' : ' (photos are too large for email)'}. Check your inbox, and the Spam folder the first time.`);
+    else flash(req, res, `The email was not sent. The email service says: ${r.error}`, 'error');
+  }
+  res.redirect('/admin/backup');
 });
 
 const backupUpload = multer({ dest: os.tmpdir(), limits: { fileSize: 500 * 1024 * 1024, files: 1, fields: 5 } });
@@ -574,7 +596,7 @@ admin.post('/backup/restore', backupField, checkCsrf, async (req, res) => {
   if (!req.file) { flash(req, res, 'Choose a backup file first.', 'error'); return res.redirect('/admin/backup'); }
   const text = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
   const int = (v, d = 0) => (Number.isFinite(Number(v)) ? Math.trunc(Number(v)) : d);
-  const added = { posts: 0, images: 0, cats: 0 };
+  const added = { posts: 0, images: 0, cats: 0, pages: 0 };
   let already = 0;
   let isBackup = false;
   let firstLine = true;
@@ -618,6 +640,13 @@ admin.post('/backup/restore', backupField, checkCsrf, async (req, res) => {
         added.posts++;
       } else if (r.type === 'image') {
         if (typeof r.data === 'string' && await core.restoreImage(r.name, Buffer.from(r.data, 'base64'))) added.images++;
+      } else if (r.type === 'page') {
+        const title = text(r.title, 80).trim();
+        if (title && core.validSlug(r.slug) && !(await db.get('SELECT id FROM pages WHERE slug = ?', [r.slug]))) {
+          await db.run('INSERT INTO pages(slug, title, body, show_form, sort, updated_at) VALUES(?, ?, ?, ?, ?, ?)',
+            [r.slug, title, text(r.body, 200000), r.show_form ? 1 : 0, Math.max(0, Math.min(999, int(r.sort))), now()]);
+          added.pages++;
+        }
       } else if (r.type === 'setting') {
         // Settings are filled in only where this site has none, so a restore never changes your current setup.
         if (SETTING_KEYS.includes(r.name) && !current[r.name] && typeof r.val === 'string' && r.val.length <= 600) {
@@ -629,17 +658,130 @@ admin.post('/backup/restore', backupField, checkCsrf, async (req, res) => {
   } finally {
     fs.unlink(req.file.path, () => {});
     core.clearCategories();
+    core.clearPages();
   }
   if (!isBackup) flash(req, res, 'That is not a backup file made by this site. Choose a file downloaded from this page.', 'error');
   else {
     const n = (count, one, many) => `${count} ${count === 1 ? one : many}`;
-    flash(req, res, `Restore finished: ${n(added.posts, 'story', 'stories')}, ${n(added.images, 'photo', 'photos')} and ${n(added.cats, 'category', 'categories')} added.`
+    flash(req, res, `Restore finished: ${n(added.posts, 'story', 'stories')}, ${n(added.images, 'photo', 'photos')}, ${n(added.cats, 'category', 'categories')} and ${n(added.pages, 'page', 'pages')} added.`
       + (already ? ` ${n(already, 'story was', 'stories were')} already on the site and left unchanged.` : ''));
   }
   res.redirect('/admin/backup');
 });
 
+/* ----- Pages (About, Contact, ...) ----- */
+admin.get('/pages', async (req, res) => {
+  res.send(A.pagesPage(pageArgs(req, res), await db.all('SELECT * FROM pages ORDER BY sort, id')));
+});
+const blankPage = async () => ({ id: 0, slug: '', title: '', body: '', show_form: 0, sort: Number((await db.get('SELECT COALESCE(MAX(sort), 0) + 1 AS n FROM pages')).n) });
+const loadPage = (id) => (/^\d{1,9}$/.test(String(id)) ? db.get('SELECT * FROM pages WHERE id = ?', [Number(id)]) : null);
+
+admin.get('/page', async (req, res) => res.send(A.pageEditPage(pageArgs(req, res), await blankPage(), [], true)));
+admin.get('/page/:id', async (req, res) => {
+  const page = await loadPage(req.params.id);
+  if (!page) { flash(req, res, 'That page no longer exists.', 'error'); return res.redirect('/admin/pages'); }
+  res.send(A.pageEditPage(pageArgs(req, res), page, [], false));
+});
+async function savePage(req, res) {
+  const isNew = !req.params.id;
+  const page = isNew ? await blankPage() : await loadPage(req.params.id);
+  if (!page) { flash(req, res, 'That page no longer exists.', 'error'); return res.redirect('/admin/pages'); }
+  const errors = [];
+  page.title = str(req.body.title, 80);
+  page.slug = str(req.body.slug, 60).toLowerCase().replace(/[\s_]+/g, '-');
+  page.body = String(req.body.body || '').trim().slice(0, 200000);
+  page.show_form = req.body.show_form ? 1 : 0;
+  page.sort = Math.max(0, Math.min(999, parseInt(req.body.sort, 10) || 0));
+  if (page.title === '') errors.push('Type a title for the page.');
+  if (!core.validSlug(page.slug)) errors.push('The page address can only have small English letters, numbers and hyphens (for example: about-us), and must not be a word the site already uses, such as "admin" or "news".');
+  else {
+    const taken = await db.get('SELECT id FROM pages WHERE slug = ?', [page.slug]);
+    if (taken && taken.id !== page.id) errors.push('Another page already uses that address. Choose a different one.');
+  }
+  if (errors.length) return res.send(A.pageEditPage(pageArgs(req, res), page, errors, isNew));
+  let id = page.id;
+  if (isNew) {
+    id = (await db.get('INSERT INTO pages(slug, title, body, show_form, sort, updated_at) VALUES(?, ?, ?, ?, ?, ?) RETURNING id',
+      [page.slug, page.title, page.body, page.show_form, page.sort, now()])).id;
+  } else {
+    await db.run('UPDATE pages SET slug = ?, title = ?, body = ?, show_form = ?, sort = ?, updated_at = ? WHERE id = ?',
+      [page.slug, page.title, page.body, page.show_form, page.sort, now(), id]);
+  }
+  core.clearPages();
+  flash(req, res, isNew ? 'Page published. Its link now shows at the top and bottom of the website.' : 'Page saved.');
+  res.redirect('/admin/page/' + id);
+}
+admin.post('/page', checkCsrf, savePage);
+admin.post('/page/:id', checkCsrf, savePage);
+admin.post('/pages/delete', checkCsrf, async (req, res) => {
+  const id = parseInt(req.body.id, 10) || 0;
+  if (id && await db.run('DELETE FROM pages WHERE id = ?', [id])) flash(req, res, 'Page deleted.');
+  core.clearPages();
+  res.redirect('/admin/pages');
+});
+
+/* ----- Messages from the contact form ----- */
+admin.get('/messages', async (req, res) => {
+  const total = Number((await db.get('SELECT COUNT(*) AS n FROM messages')).n);
+  const pages = Math.max(1, Math.ceil(total / 30));
+  const page = Math.min(pageParam(req), pages);
+  res.send(A.messagesPage(pageArgs(req, res), {
+    total, page, pages,
+    rows: await db.all(`SELECT * FROM messages ORDER BY created_at DESC, id DESC LIMIT 30 OFFSET ${(page - 1) * 30}`),
+  }));
+});
+admin.post('/messages', checkCsrf, async (req, res) => {
+  const id = parseInt(req.body.id, 10) || 0;
+  if (id && req.body.action === 'delete') { await db.run('DELETE FROM messages WHERE id = ?', [id]); flash(req, res, 'Message deleted.'); }
+  else if (id && (req.body.action === 'read' || req.body.action === 'unread')) await db.run('UPDATE messages SET is_read = ? WHERE id = ?', [req.body.action === 'read' ? 1 : 0, id]);
+  const back = parseInt(req.body.back, 10) || 1;
+  res.redirect('/admin/messages' + (back > 1 ? '?page=' + back : ''));
+});
+
 app.use('/admin', admin);
+
+/* ====================== Pages on the public site (About, Contact, ...) ====================== */
+// These come after every other address, so a page can never hide a part of the site.
+const findPage = (slug) => (/^[a-z0-9][a-z0-9-]{1,58}$/.test(slug) ? db.get('SELECT * FROM pages WHERE slug = ?', [slug]) : null);
+const pageData = async (ctx, page, extra) => ({
+  page, sent: false, errors: [], values: { name: '', contact: '', message: '' },
+  token: page.show_form ? core.formToken() : '',
+  moreNews: await fetchPosts(VISIBLE, [ctx.now], 6),
+  ...extra,
+});
+
+app.get('/:slug', async (req, res, next) => {
+  const page = await findPage(req.params.slug);
+  if (!page) return next();
+  res.send(V.staticPage(req.ctx, await pageData(req.ctx, page, { sent: req.query.sent === '1' })));
+});
+
+// A reader sends a message from a page that has the form.
+app.post('/:slug', express.urlencoded({ extended: false, limit: '20kb' }), async (req, res, next) => {
+  const ctx = req.ctx;
+  const page = await findPage(req.params.slug);
+  if (!page || !page.show_form) return next();
+  const values = { name: str(req.body.name, 80), contact: str(req.body.contact, 120), message: String(req.body.message || '').trim().slice(0, 2000) };
+  const fail = async (key) => res.status(400).send(V.staticPage(ctx, await pageData(ctx, page, { errors: [ctx.t(key)], values })));
+
+  // Spam checks: a hidden field people never fill in, and a form that was opened a moment ago by this site.
+  const age = core.formTokenAge(req.body.t);
+  if (req.body.website) return res.redirect(`/${page.slug}?sent=1#message`);       // pretend it worked; nothing is saved
+  if (age === null || age < 2 || age > 6 * 3600) return fail('err_form');
+  if (values.name.length < 2 || values.contact.length < 5 || values.message.length < 5) return fail('err_fields');
+
+  const who = 'msg:' + req.ip;
+  await db.run("DELETE FROM login_attempts WHERE who LIKE 'msg:%' AND ts < ?", [now() - 3600]);
+  if (Number((await db.get('SELECT COUNT(*) AS n FROM login_attempts WHERE who = ?', [who])).n) >= 20) return fail('err_many');
+  await db.run('INSERT INTO login_attempts(who, ts) VALUES(?, ?)', [who, now()]);
+
+  await db.run('INSERT INTO messages(name, contact, body, created_at) VALUES(?, ?, ?, ?)', [values.name, values.contact, values.message, now()]);
+  mail.mailMessage({ name: values.name, contact: values.contact, body: values.message });   // background; the reader does not wait
+  // Keep the newest 2000 so the inbox can never fill the database.
+  const old = await db.get('SELECT id FROM messages ORDER BY id DESC LIMIT 1 OFFSET 2000');
+  if (old) await db.run('DELETE FROM messages WHERE id <= ?', [old.id]);
+  res.redirect(`/${page.slug}?sent=1#message`);
+});
 
 /* ---------- Not found + errors ---------- */
 app.use((req, res) => res.status(404).send(V.notFoundPage(req.ctx)));
@@ -658,6 +800,7 @@ async function start() {
   try {
     kind = await db.init();
     await core.loadSecret();
+    if (await core.isInstalled()) await core.ensurePages();     // adds About and Contact to sites made before pages existed
   } catch (e) {
     console.error('\nThe site could not open its database.');
     console.error(process.env.DATABASE_URL ? 'Check that DATABASE_URL is the full connection string from your database provider.' : 'Check that the "data" folder can be written to.');
@@ -676,6 +819,9 @@ async function start() {
       console.warn(`Password for "${first.username}" was reset from ADMIN_PASSWORD_RESET. Remove that variable now.`);
     }
   }
+
+  // Scheduled stories and the weekly backup also go out when nobody is using the admin panel.
+  setInterval(() => mail.seen(''), 10 * 60 * 1000).unref();
 
   const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`News site running on port ${PORT} (${kind === 'postgres' ? 'PostgreSQL database' : 'SQLite file in ' + (process.env.DATA_DIR || './data')})`);
