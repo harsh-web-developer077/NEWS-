@@ -241,6 +241,14 @@ async function saveImage(buf) {
   await db.run('INSERT INTO images(name, mime, data, size, created_at) VALUES(?, ?, ?, ?, ?)', [name, kind.mime, buf, buf.length, now()]);
   return name;
 }
+/** Puts back a photo from a backup file under its original name. Returns true when it was added. */
+async function restoreImage(name, buf) {
+  const kind = sniffImage(buf);
+  if (!/^[A-Za-z0-9._-]{5,80}$/.test(String(name)) || !kind || buf.length > MAX_PHOTO_BYTES) return false;
+  if (await db.get('SELECT name FROM images WHERE name = ?', [name])) return false;
+  await db.run('INSERT INTO images(name, mime, data, size, created_at) VALUES(?, ?, ?, ?, ?)', [name, kind.mime, buf, buf.length, now()]);
+  return true;
+}
 async function loadImage(name) {
   if (!/^[A-Za-z0-9._-]{5,80}$/.test(name)) return null;
   if (imageCache.has(name)) return imageCache.get(name);
@@ -275,5 +283,5 @@ module.exports = {
   VISIBLE, fetchPosts, countPosts, likeValue,
   hashPassword, verifyPassword,
   readCookies, setCookie, makeSession, readSession, csrfFor, SESSION_HOURS,
-  MAX_PHOTO_BYTES, saveImage, loadImage, deleteImage,
+  MAX_PHOTO_BYTES, saveImage, restoreImage, loadImage, deleteImage,
 };

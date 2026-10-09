@@ -15,6 +15,17 @@ Site do tarah se chal sakti hai, apne aap pehchan leti hai:
 
 Photos bhi database me hi rehti hain, isliye alag se upload folder ya image hosting nahi chahiye.
 
+## Khabrein kahan store hoti hain, aur backup
+
+- Har published khabar, photo aur setting **database** me rehti hai (upar wali table dekhein). Wahan se wo tab tak nahi hatti jab tak aap khud delete na karein.
+- Site par purani khabrein hamesha milti hain: home page ke "Older stories" pages, har category ka page, aur search.
+- **Email storage ki jagah nahi hai**: website email inbox se khabrein padh kar nahi dikha sakti. Lekin email **backup rakhne** ke liye theek hai.
+- Admin > **Backup** me:
+  - **Download stories**: saari khabrein ek chhoti file me (email me attach ho jati hai).
+  - **Download stories and photos**: sab kuch ek file me (badi ho to Google Drive me rakhein).
+  - **Restore**: backup file wapas upload karo to jo khabrein/photos site par nahi hain wo jud jati hain. Kuch delete ya overwrite nahi hota.
+- Hafte me ek baar backup download karke khud ko email kar dein ya Drive me rakh dein.
+
 ## Roz khabar kaise daalein
 
 1. `yoursite/admin` kholein aur login karein.
@@ -43,10 +54,13 @@ Side ke options:
 - **All news**: saari khabrein, edit / delete / preview, views ki ginti, search aur filter.
 - **Categories**: menu ke sections jodna, naam badalna, order badalna.
 - **Settings**: site ka naam, tagline, bhasha (Hindi/English), contact, social links, password badalna.
+- **Backup**: saari khabrein aur photos ek file me download karna, aur file se wapas laana.
 
 ## Public site me kya-kya hai
 
-- Home page: top story, taza khabrein, breaking patti, "sabse zyada padhi gayi" list
+- Home page: chalti hui breaking patti, badi top story + 2 photo tiles, "Top stories" ke 4 cards, taza khabrein, "sabse zyada padhi gayi" list
+- **Category-wise section**: home page par har category (Local, Sports...) ka apna block, apne rang ke saath
+- Har category ka apna rang poori site par (menu, tags, headings)
 - Category pages, search, har khabar ka apna page (`/news/12`)
 - WhatsApp / Facebook / X share buttons aur link copy
 - Mobile par poori tarah chalti hai, Hindi fonts andar hi hain

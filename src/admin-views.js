@@ -19,7 +19,7 @@ function layout(a, title, active, content, bare = false) {
 <meta name="robots" content="noindex, nofollow">
 <title>${title} | ${site} admin</title>
 <link rel="stylesheet" href="/assets/css/fonts.css?v=1">
-<link rel="stylesheet" href="/assets/css/admin.css?v=2">
+<link rel="stylesheet" href="/assets/css/admin.css?v=3">
 </head>
 <body${bare ? raw(' class="bare"') : ''}>
 ${bare ? '' : html`<header class="bar">
@@ -30,6 +30,7 @@ ${bare ? '' : html`<header class="bar">
       <a href="/admin/post"${cur(active === 'add')}>Add news</a>
       <a href="/admin/categories"${cur(active === 'categories')}>Categories</a>
       <a href="/admin/settings"${cur(active === 'settings')}>Settings</a>
+      <a href="/admin/backup"${cur(active === 'backup')}>Backup</a>
     </nav>
     <div class="bar-end">
       <a href="/" target="_blank" rel="noopener">View site</a>
@@ -353,8 +354,50 @@ function settingsPage(a) {
 </form>`);
 }
 
+function backupPage(a, d) {
+  const mb = (bytes) => (bytes / 1024 / 1024).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0);
+  return layout(a, 'Backup', 'backup', html`
+<div class="head"><h1>Backup</h1></div>
+<div class="card">
+  <h2>Where your news is stored</h2>
+  <p class="para">${d.kind === 'postgres'
+    ? 'Every story, photo and setting is saved in your PostgreSQL database (the DATABASE_URL of this site). It stays there when the site restarts or is updated.'
+    : 'Every story, photo and setting is saved in the file news.sqlite in the data folder of this server.'}</p>
+  <div class="stats stats-3">
+    <div><b>${num(d.posts)}</b><span>Stories</span></div>
+    <div><b>${num(d.images)}</b><span>Photos</span></div>
+    <div><b>${mb(d.bytes)} MB</b><span>Size of all photos</span></div>
+  </div>
+</div>
+<div class="card">
+  <h2>Download a backup</h2>
+  <p class="para">A backup is one file with a copy of everything. Keep it outside this site: email it to yourself or put it in Google Drive. Download a new one every week or so.</p>
+  <div class="choices">
+    <div>
+      <a class="btn" href="/admin/backup/download">Download stories</a>
+      <p class="hint">All stories, categories and settings, without photos. A small file that fits in an email.</p>
+    </div>
+    <div>
+      <a class="btn btn-quiet" href="/admin/backup/download?photos=1">Download stories and photos</a>
+      <p class="hint">Everything, about ${mb(d.bytes * 1.37 + 200000)} MB now. Most email services accept attachments up to 20 or 25 MB; use Google Drive when it is larger.</p>
+    </div>
+  </div>
+</div>
+<div class="card">
+  <h2>Restore from a backup</h2>
+  <p class="para">Adds the stories, categories and photos from a backup file that are missing here. Nothing on the site is deleted or replaced.</p>
+  <form method="post" action="/admin/backup/restore" enctype="multipart/form-data" class="inline-form" data-confirm="Add everything from this backup file to the site?">
+    ${csrfField(a)}
+    <label class="grow">Backup file
+      <input name="backup" type="file" accept=".txt,text/plain" required>
+    </label>
+    <button class="btn" type="submit">Restore</button>
+  </form>
+</div>`);
+}
+
 function messagePage(a, title, text) {
   return layout(a, title, '', html`<div class="card auth"><h1>${title}</h1><p class="hint">${text}</p><p class="hint"><a href="/admin">Back to the admin panel</a></p></div>`, true);
 }
 
-module.exports = { setupPage, loginPage, listPage, postPage, categoriesPage, settingsPage, messagePage };
+module.exports = { setupPage, loginPage, listPage, postPage, categoriesPage, settingsPage, backupPage, messagePage };

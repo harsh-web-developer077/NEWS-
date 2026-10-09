@@ -5,6 +5,9 @@
  * Open http://localhost:3000 and the first-time setup page appears.
  */
 const path = require('node:path');
+const fs = require('node:fs');
+const os = require('node:os');
+const readline = require('node:readline');
 const crypto = require('node:crypto');
 const express = require('express');
 const multer = require('multer');
@@ -47,6 +50,25 @@ const pageParam = (req) => Math.max(1, parseInt(req.query.page, 10) || 1);
 const perPage = (ctx) => Math.max(4, Math.min(40, parseInt(ctx.set('per_page', '10'), 10) || 10));
 const str = (v, max) => String(typeof v === 'string' ? v : '').trim().slice(0, max);
 const mostRead = (ctx) => fetchPosts(`${VISIBLE} AND p.views > 0 AND p.published_at >= ?`, [ctx.now, ctx.now - 30 * 86400], 5, 0, 'p.views DESC, p.published_at DESC');
+/** How many public stories each category has: { categoryId: count }. */
+async function categoryCounts(ctx) {
+  const out = {};
+  for (const r of await db.all("SELECT category_id, COUNT(*) AS n FROM posts p WHERE " + VISIBLE + " AND category_id IS NOT NULL GROUP BY category_id", [ctx.now])) out[r.category_id] = Number(r.n);
+  return out;
+}
+/** Newest stories of every category in one query: [{ cat, posts: [up to 4] }], in menu order. */
+async function categoryBlocks(ctx) {
+  const rows = await db.all(
+    `SELECT * FROM (
+       SELECT p.*, c.name AS category_name,
+              ROW_NUMBER() OVER (PARTITION BY p.category_id ORDER BY p.published_at DESC, p.id DESC) AS rn
+       FROM posts p JOIN categories c ON c.id = p.category_id
+       WHERE ${VISIBLE}
+     ) t WHERE rn <= 4 ORDER BY published_at DESC, id DESC`, [ctx.now]);
+  return ctx.cats
+    .map((cat) => ({ cat, posts: rows.filter((r) => r.category_id === cat.id) }))
+    .filter((b) => b.posts.length);
+}
 
 /* ====================== Public site ====================== */
 
@@ -55,16 +77,21 @@ app.get('/', async (req, res) => {
   const n = perPage(ctx);
   // Lead story: the newest one marked "top story", otherwise simply the newest.
   const lead = (await fetchPosts(`${VISIBLE} AND p.is_featured = 1`, [ctx.now], 1))[0] || (await fetchPosts(VISIBLE, [ctx.now], 1))[0] || null;
-  const top = lead ? await fetchPosts(`${VISIBLE} AND p.id != ?`, [ctx.now, lead.id], 4) : [];
-  const skip = (lead ? [lead] : []).concat(top).map((p) => Number(p.id));
+  // Next to the lead: two photo tiles, then a strip of four cards.
+  const next = lead ? await fetchPosts(`${VISIBLE} AND p.id != ?`, [ctx.now, lead.id], 6) : [];
+  const skip = (lead ? [lead] : []).concat(next).map((p) => Number(p.id));
   const notIn = skip.length ? ` AND p.id NOT IN (${skip.join(',')})` : '';
   const total = await countPosts(VISIBLE + notIn, [ctx.now]);
   const pages = Math.max(1, Math.ceil(total / n));
   const page = Math.min(pageParam(req), pages);
   res.send(V.homePage(ctx, {
-    lead, top, page, pages,
+    lead, page, pages,
+    side: next.slice(0, 2),
+    strip: next.slice(2, 6),
     latest: await fetchPosts(VISIBLE + notIn, [ctx.now], n, (page - 1) * n),
-    breaking: await fetchPosts(`${VISIBLE} AND p.is_breaking = 1 AND p.published_at >= ?`, [ctx.now, ctx.now - 86400], 5),
+    breaking: page === 1 ? await fetchPosts(`${VISIBLE} AND p.is_breaking = 1 AND p.published_at >= ?`, [ctx.now, ctx.now - 86400], 5) : [],
+    blocks: page === 1 ? await categoryBlocks(ctx) : [],
+    counts: await categoryCounts(ctx),
     mostRead: await mostRead(ctx),
   }));
 });
@@ -84,7 +111,8 @@ app.get('/news/:id', async (req, res, next) => {
   if (!isPublic) res.set('Cache-Control', 'no-store');
   res.send(V.articlePage(ctx, {
     post, preview: !isPublic,
-    related: post.category_id ? await fetchPosts(`${VISIBLE} AND p.category_id = ? AND p.id != ?`, [ctx.now, post.category_id, id], 4) : [],
+    related: post.category_id ? await fetchPosts(`${VISIBLE} AND p.category_id = ? AND p.id != ?`, [ctx.now, post.category_id, id], 3) : [],
+    moreNews: await fetchPosts(`${VISIBLE} AND p.id != ?`, [ctx.now, id], 6),
     mostRead: await mostRead(ctx),
   }));
 });
@@ -93,12 +121,12 @@ app.get('/category/:id', async (req, res, next) => {
   const ctx = req.ctx;
   const cat = ctx.cats.find((c) => String(c.id) === req.params.id);
   if (!cat) return next();
-  const n = perPage(ctx);
+  const n = Math.ceil(perPage(ctx) / 3) * 3 + 1;       // one large story + full rows of three
   const where = `${VISIBLE} AND p.category_id = ?`;
   const total = await countPosts(where, [ctx.now, cat.id]);
   const pages = Math.max(1, Math.ceil(total / n));
   const page = Math.min(pageParam(req), pages);
-  res.send(V.categoryPage(ctx, { cat, total, page, pages, posts: await fetchPosts(where, [ctx.now, cat.id], n, (page - 1) * n), mostRead: await mostRead(ctx) }));
+  res.send(V.categoryPage(ctx, { cat, total, page, pages, posts: await fetchPosts(where, [ctx.now, cat.id], n, (page - 1) * n), mostRead: await mostRead(ctx), counts: await categoryCounts(ctx) }));
 });
 
 app.get('/search', async (req, res) => {
@@ -115,7 +143,7 @@ app.get('/search', async (req, res) => {
     page = Math.min(pageParam(req), pages);
     posts = await fetchPosts(where, params, 12, (page - 1) * 12);
   }
-  res.send(V.searchPage(ctx, { q, posts, page, pages, mostRead: await mostRead(ctx) }));
+  res.send(V.searchPage(ctx, { q, posts, page, pages, mostRead: await mostRead(ctx), counts: await categoryCounts(ctx) }));
 });
 
 // Photos are kept in the database and served from here.
@@ -497,6 +525,120 @@ admin.post('/password', checkCsrf, async (req, res) => {
   res.redirect('/admin/settings');
 });
 
+/* ----- Backup: download everything as one file, and put it back ----- */
+const SETTING_KEYS = ['site_name', 'tagline', 'lang', 'about', 'default_author', 'contact_phone', 'contact_email', 'address', 'per_page', 'timezone',
+  'facebook_url', 'youtube_url', 'instagram_url', 'whatsapp_url', 'site_url'];
+
+admin.get('/backup', async (req, res) => {
+  const img = await db.get('SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS bytes FROM images');
+  res.send(A.backupPage(pageArgs(req, res), { kind: db.kind, posts: await countPosts('1 = 1'), images: Number(img.n), bytes: Number(img.bytes) }));
+});
+
+// The file has one JSON record per line, so even a large backup never has to fit in memory at once.
+admin.get('/backup/download', async (req, res) => {
+  const withPhotos = req.query.photos === '1';
+  const day = core.toLocalInput(now(), req.ctx.tz).slice(0, 10);
+  res.set({
+    'Content-Type': 'text/plain; charset=utf-8',
+    'Content-Disposition': `attachment; filename="news-backup-${day}${withPhotos ? '-with-photos' : ''}.txt"`,
+  });
+  const line = (record) => new Promise((resolve) => {
+    if (res.write(JSON.stringify(record) + '\n')) resolve(); else res.once('drain', resolve);
+  });
+  await line({ type: 'news-backup', version: 1, created: new Date().toISOString(), site: req.ctx.set('site_name', 'News'), photos: withPhotos });
+  for (const k of SETTING_KEYS) if (req.ctx.s[k]) await line({ type: 'setting', name: k, val: req.ctx.s[k] });
+  for (const c of await db.all('SELECT * FROM categories ORDER BY sort, name')) await line({ type: 'category', id: c.id, name: c.name, sort: c.sort });
+  for (let last = 0; ;) {
+    const batch = await db.all('SELECT * FROM posts WHERE id > ? ORDER BY id LIMIT 100', [last]);
+    if (!batch.length) break;
+    for (const p of batch) await line({ type: 'post', ...p });
+    last = batch[batch.length - 1].id;
+  }
+  if (withPhotos) {
+    for (const { name } of await db.all('SELECT name FROM images ORDER BY created_at, name')) {
+      const row = await db.get('SELECT mime, data FROM images WHERE name = ?', [name]);
+      if (row) await line({ type: 'image', name, mime: row.mime, data: Buffer.from(row.data).toString('base64') });
+    }
+  }
+  res.end();
+});
+
+const backupUpload = multer({ dest: os.tmpdir(), limits: { fileSize: 500 * 1024 * 1024, files: 1, fields: 5 } });
+const backupField = (req, res, next) => backupUpload.single('backup')(req, res, (err) => {
+  if (!err) return next();
+  flash(req, res, err.code === 'LIMIT_FILE_SIZE' ? 'That file is larger than 500 MB and cannot be restored here.' : 'The file could not be read. Try again.', 'error');
+  res.redirect('/admin/backup');
+});
+
+admin.post('/backup/restore', backupField, checkCsrf, async (req, res) => {
+  if (!req.file) { flash(req, res, 'Choose a backup file first.', 'error'); return res.redirect('/admin/backup'); }
+  const text = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '');
+  const int = (v, d = 0) => (Number.isFinite(Number(v)) ? Math.trunc(Number(v)) : d);
+  const added = { posts: 0, images: 0, cats: 0 };
+  let already = 0;
+  let isBackup = false;
+  let firstLine = true;
+  const catIds = {};                      // id in the file -> id on this site
+  const byName = new Map((await db.all('SELECT id, name FROM categories')).map((c) => [c.name.toLowerCase(), c.id]));
+  const current = await core.getSettings();
+  try {
+    const reader = readline.createInterface({ input: fs.createReadStream(req.file.path, 'utf8'), crlfDelay: Infinity });
+    for await (const raw of reader) {
+      if (!raw.trim()) continue;
+      let r;
+      try { r = JSON.parse(raw); } catch (e) { if (firstLine) break; continue; }
+      if (firstLine) {
+        firstLine = false;
+        if (!r || r.type !== 'news-backup') break;
+        isBackup = true;
+        continue;
+      }
+      if (!r || typeof r !== 'object') continue;
+      if (r.type === 'category') {
+        const name = text(r.name, 40).trim();
+        if (!name) continue;
+        if (!byName.has(name.toLowerCase())) {
+          const row = await db.get('INSERT INTO categories(name, sort) VALUES(?, ?) RETURNING id', [name, Math.max(0, Math.min(999, int(r.sort)))]);
+          byName.set(name.toLowerCase(), row.id);
+          added.cats++;
+        }
+        catIds[r.id] = byName.get(name.toLowerCase());
+      } else if (r.type === 'post') {
+        const title = text(r.title, 200).trim();
+        const published = int(r.published_at, now());
+        if (!title) continue;
+        if (await db.get('SELECT id FROM posts WHERE title = ? AND published_at = ?', [title, published])) { already++; continue; }
+        const image = /^[A-Za-z0-9._-]{5,80}$/.test(String(r.image || '')) ? r.image : '';
+        await db.run(
+          `INSERT INTO posts(title, summary, body, image, image_caption, category_id, author, status, is_featured, is_breaking, views, published_at, created_at, updated_at)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          [title, text(r.summary, 400), text(r.body, 500000), image, text(r.image_caption, 200), catIds[r.category_id] || null, text(r.author, 80),
+            r.status === 'published' ? 'published' : 'draft', r.is_featured ? 1 : 0, r.is_breaking ? 1 : 0, Math.max(0, int(r.views)),
+            published, int(r.created_at, published), int(r.updated_at, published)]);
+        added.posts++;
+      } else if (r.type === 'image') {
+        if (typeof r.data === 'string' && await core.restoreImage(r.name, Buffer.from(r.data, 'base64'))) added.images++;
+      } else if (r.type === 'setting') {
+        // Settings are filled in only where this site has none, so a restore never changes your current setup.
+        if (SETTING_KEYS.includes(r.name) && !current[r.name] && typeof r.val === 'string' && r.val.length <= 600) {
+          const isLink = r.name.endsWith('_url');
+          if (!isLink || /^https?:\/\/[^\s<>"']+$/i.test(r.val)) await core.setSetting(r.name, r.val);
+        }
+      }
+    }
+  } finally {
+    fs.unlink(req.file.path, () => {});
+    core.clearCategories();
+  }
+  if (!isBackup) flash(req, res, 'That is not a backup file made by this site. Choose a file downloaded from this page.', 'error');
+  else {
+    const n = (count, one, many) => `${count} ${count === 1 ? one : many}`;
+    flash(req, res, `Restore finished: ${n(added.posts, 'story', 'stories')}, ${n(added.images, 'photo', 'photos')} and ${n(added.cats, 'category', 'categories')} added.`
+      + (already ? ` ${n(already, 'story was', 'stories were')} already on the site and left unchanged.` : ''));
+  }
+  res.redirect('/admin/backup');
+});
+
 app.use('/admin', admin);
 
 /* ---------- Not found + errors ---------- */
@@ -504,6 +646,7 @@ app.use((req, res) => res.status(404).send(V.notFoundPage(req.ctx)));
 app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
   if (err && err.type === 'entity.too.large') return res.status(413).type('text').send('That form was too large. Go back and shorten the text.');
   console.error('Error on', req.method, req.originalUrl, '-', err && err.stack ? err.stack : err);
+  if (res.headersSent) return res.destroy();        // a download that failed half-way
   res.status(500).send(html`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Something went wrong</title>
 <body style="font-family:system-ui,sans-serif;max-width:560px;margin:12vh auto;padding:0 20px;line-height:1.6"><h1 style="font-size:22px">Something went wrong</h1>
 <p>The page could not be shown. Reload in a moment. If it keeps happening, check the server log.</p></body>`.toString());
@@ -540,7 +683,11 @@ async function start() {
       console.warn('WARNING: no DATABASE_URL set. On Render, news and photos will be lost on every restart. See DEPLOY-RENDER.md.');
     }
   });
-  const stop = () => server.close(() => { Promise.resolve(db.close()).finally(() => process.exit(0)); });
+  const stop = () => {
+    setTimeout(() => process.exit(0), 5000).unref();     // never hang on shutdown
+    server.close(() => { Promise.resolve(db.close()).finally(() => process.exit(0)); });
+    if (server.closeIdleConnections) server.closeIdleConnections();
+  };
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);
 }

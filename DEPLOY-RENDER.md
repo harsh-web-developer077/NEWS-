@@ -40,6 +40,10 @@ Check: repository ke pehle page par `server.js`, `package.json`, `render.yaml`, 
 
 Blueprint na chale to haath se bhi ho jata hai: **New > Web Service** > repository chuno > Language **Node** > Build Command `npm install` > Start Command `node server.js` > Instance Type **Free** > Environment Variables me `DATABASE_URL` (Neon string) aur `NODE_VERSION` = `22.22.0` daalo > **Deploy**.
 
+## Pehle se site chal rahi hai aur sirf naya design chahiye?
+
+GitHub repository me purani files ki jagah is zip ki files upload kar do (same naam wali files replace ho jayengi). Render apne aap dobara deploy karega. Database wahi rehta hai, isliye purani khabrein aur login waise hi rahenge.
+
 ## Free plan ki do baatein
 
 - **Pehli baar kholne me der:** 15 minute koi na aaye to site so jati hai; agla visitor aane par jaagne me lagbhag 1 minute lagta hai. Uske baad normal chalti hai. Khabrein nahi mitti, kyunki wo Neon me hain.
@@ -47,6 +51,7 @@ Blueprint na chale to haath se bhi ho jata hai: **New > Web Service** > reposito
 
 ## Baad me kaam ki baatein
 
+- **Backup:** Admin > Backup se saari khabrein (aur photos) ek file me download ho jati hain. Hafte me ek baar download karke khud ko email kar do ya Google Drive me rakh do. Kabhi database badalna pade to nayi site par wahi file **Restore** kar do.
 - **Site update karna:** GitHub par file badlo. Render apne aap dobara deploy kar deta hai, data waisa hi rehta hai.
 - **Apna domain:** Render me service > Settings > Custom Domains. Phir Admin > Settings me "Website address" me apna domain daal do.
 - **Password bhool gaye:** Render me service > Environment me `ADMIN_PASSWORD_RESET` naam ka variable banao, value me naya password (kam se kam 8 akshar). Save karo, service restart hogi, naye password se login karo, phir wo variable **hata do**.

@@ -156,3 +156,12 @@ input.big { font-size: 21px; font-weight: 600; padding: 12px; }
   .find { flex: 1; }
   .find input { width: auto; flex: 1; }
 }
+
+/* Backup */
+.para { margin: 8px 0 0; max-width: 70ch; }
+.card .stats { margin: 16px 0 0; }
+.stats-3 { grid-template-columns: repeat(3, 1fr); }
+.stats-3 div { background: var(--bg); }
+.choices { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 16px; }
+.card > .inline-form { margin-top: 16px; }
+@media (max-width: 860px) { .choices, .stats-3 { grid-template-columns: 1fr; } }

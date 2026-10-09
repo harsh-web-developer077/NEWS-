@@ -7,6 +7,20 @@ const postUrl = (p) => `/news/${p.id}`;
 const catUrl = (id) => `/category/${id}`;
 const imgUrl = (name) => `/uploads/${name}`;
 const summaryOf = (p, len) => (p.summary !== '' ? p.summary : plainExcerpt(p.body, len));
+/** Each category keeps one of six colours, used on its headings, tags and blocks. */
+const catClass = (id) => (id ? `c${(Number(id) - 1) % 6}` : 'c0');
+const firstLetter = (text) => {
+  const t = String(text || '').trim();
+  if (!t) return 'N';
+  try { return [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(t)][0].segment.toUpperCase(); } catch (e) { return t[0].toUpperCase(); }
+};
+const lines = (text) => String(text).split(/\r?\n/).map((l, i) => html`${i ? raw('<br>') : ''}${l}`);
+
+/** Photo of a story, or a coloured block with the category name when there is none. */
+function photo(ctx, p, lazy = true) {
+  if (p.image !== '') return html`<img src="${imgUrl(p.image)}" alt=""${lazy ? raw(' loading="lazy"') : ''}>`;
+  return html`<span class="ph" aria-hidden="true"><span>${p.category_name || ctx.set('site_name', 'News')}</span></span>`;
+}
 
 function layout(ctx, o, content) {
   const site = ctx.set('site_name', 'News');
@@ -15,7 +29,6 @@ function layout(ctx, o, content) {
   const desc = o.description ?? tagline;
   const social = [['Facebook', ctx.s.facebook_url], ['YouTube', ctx.s.youtube_url], ['Instagram', ctx.s.instagram_url], ['WhatsApp', ctx.s.whatsapp_url]].filter((x) => x[1]);
   const hasContact = ctx.set('contact_phone') + ctx.set('contact_email') + ctx.set('address') !== '';
-  const lines = (text) => String(text).split(/\r?\n/).map((l, i) => html`${i ? raw('<br>') : ''}${l}`);
 
   return html`<!doctype html>
 <html lang="${ctx.lang}">
@@ -33,33 +46,43 @@ ${o.canonical ? html`<meta property="og:url" content="${o.canonical}">` : ''}
 ${o.image ? html`<meta property="og:image" content="${o.image}">
 <meta name="twitter:card" content="summary_large_image">` : ''}
 ${o.noindex ? raw('<meta name="robots" content="noindex">') : ''}
+<meta name="theme-color" content="#1f2c7c">
 <link rel="alternate" type="application/rss+xml" title="${site}" href="/feed.xml">
 <link rel="stylesheet" href="/assets/css/fonts.css?v=1">
-<link rel="stylesheet" href="/assets/css/style.css?v=1">
+<link rel="stylesheet" href="/assets/css/style.css?v=3">
 ${o.head || ''}
 </head>
 <body>
 <a class="skip" href="#main">${ctx.lang === 'hi' ? 'सीधे खबरों पर जाएँ' : 'Skip to news'}</a>
+<div class="topbar">
+  <div class="wrap topbar-in">
+    <time datetime="${isoDate(ctx.now).slice(0, 10)}" class="today">${ctx.date(ctx.now, false, true)}</time>
+    <span class="topbar-links">
+      ${social.map(([name, link]) => html`<a href="${link}" target="_blank" rel="noopener">${name}</a>`)}
+      <a href="/feed.xml">RSS</a>
+    </span>
+  </div>
+</div>
 <header class="masthead">
   <div class="wrap masthead-in">
     <a class="brand" href="/">
-      <span class="brand-name">${site}</span>
-      ${tagline ? html`<span class="brand-tag">${tagline}</span>` : ''}
+      <span class="brand-mark" aria-hidden="true">${firstLetter(site)}</span>
+      <span class="brand-words">
+        <span class="brand-name">${site}</span>
+        ${tagline ? html`<span class="brand-tag">${tagline}</span>` : ''}
+      </span>
     </a>
-    <div class="masthead-side">
-      <time class="today" datetime="${isoDate(ctx.now).slice(0, 10)}">${ctx.date(ctx.now, false, true)}</time>
-      <form class="search" action="/search" method="get" role="search">
-        <label class="sr" for="q">${ctx.t('search')}</label>
-        <input id="q" name="q" type="search" placeholder="${ctx.t('search_placeholder')}" value="${o.q || ''}" maxlength="80">
-        <button type="submit">${ctx.t('search')}</button>
-      </form>
-    </div>
+    <form class="search" action="/search" method="get" role="search">
+      <label class="sr" for="q">${ctx.t('search')}</label>
+      <input id="q" name="q" type="search" placeholder="${ctx.t('search_placeholder')}" value="${o.q || ''}" maxlength="80">
+      <button type="submit">${ctx.t('search')}</button>
+    </form>
   </div>
 </header>
 <nav class="sections" aria-label="${ctx.t('categories')}">
   <div class="wrap sections-in">
     <a href="/"${o.active === 'home' ? raw(' aria-current="page"') : ''}>${ctx.t('home')}</a>
-    ${ctx.cats.map((c) => html`<a href="${catUrl(c.id)}"${o.active === c.id ? raw(' aria-current="page"') : ''}>${c.name}</a>
+    ${ctx.cats.map((c) => html`<a class="${catClass(c.id)}" href="${catUrl(c.id)}"${o.active === c.id ? raw(' aria-current="page"') : ''}>${c.name}</a>
     `)}
   </div>
 </nav>
@@ -69,12 +92,15 @@ ${content}
 <footer class="foot">
   <div class="wrap foot-in">
     <div class="foot-about">
-      <p class="foot-name">${site}</p>
-      ${ctx.set('about') ? html`<p>${lines(ctx.s.about)}</p>` : ''}
+      <a class="brand" href="/">
+        <span class="brand-mark" aria-hidden="true">${firstLetter(site)}</span>
+        <span class="brand-words"><span class="brand-name">${site}</span></span>
+      </a>
+      ${ctx.set('about') ? html`<p>${lines(ctx.s.about)}</p>` : (tagline ? html`<p>${tagline}</p>` : '')}
     </div>
     <div>
       <h2>${ctx.t('categories')}</h2>
-      <ul>${ctx.cats.map((c) => html`<li><a href="${catUrl(c.id)}">${c.name}</a></li>`)}</ul>
+      <ul class="foot-cols">${ctx.cats.map((c) => html`<li><a href="${catUrl(c.id)}">${c.name}</a></li>`)}</ul>
     </div>
     ${hasContact ? html`<div>
       <h2>${ctx.t('contact')}</h2>
@@ -89,9 +115,11 @@ ${content}
       <ul>${social.map(([name, link]) => html`<li><a href="${link}" target="_blank" rel="noopener">${name}</a></li>`)}</ul>
     </div>` : ''}
   </div>
-  <div class="wrap foot-base">
-    <span>© ${new Date().getFullYear()} ${site}. ${ctx.t('rights')}</span>
-    <span><a href="/feed.xml">RSS</a> <a href="/admin">Admin</a></span>
+  <div class="foot-base">
+    <div class="wrap foot-base-in">
+      <span>© ${new Date().getFullYear()} ${site}. ${ctx.t('rights')}</span>
+      <span><a href="/feed.xml">RSS</a> <a href="/sitemap.xml">Sitemap</a> <a href="/admin">Admin</a></span>
+    </div>
   </div>
 </footer>
 <script src="/assets/js/site.js?v=1" defer></script>
@@ -99,11 +127,43 @@ ${content}
 </html>`.toString();
 }
 
-/** One story in a list: photo on the side, headline, summary, time. */
+/* ---------- Story pieces ---------- */
+
+/** Photo with the headline printed over it. The whole tile is one link. */
+function tile(ctx, p, big = false) {
+  return html`
+  <article class="tile ${catClass(p.category_id)}${big ? ' tile-big' : ''}">
+    <a href="${postUrl(p)}">
+      ${photo(ctx, p, false)}
+      <div class="tile-text">
+        ${p.category_name ? html`<span class="chip">${p.category_name}</span>` : ''}
+        <h3>${p.title}</h3>
+        <time datetime="${isoDate(p.published_at)}">${ctx.ago(p.published_at)}</time>
+      </div>
+    </a>
+  </article>`;
+}
+
+/** Photo on top, headline below. */
+function card(ctx, p, showTag = true, showSummary = false) {
+  const summary = showSummary ? summaryOf(p, 110) : '';
+  return html`
+  <article class="card ${catClass(p.category_id)}">
+    <a class="card-img" href="${postUrl(p)}" tabindex="-1" aria-hidden="true">${photo(ctx, p)}</a>
+    <div class="card-text">
+      ${showTag && p.category_name ? html`<a class="tag" href="${catUrl(p.category_id)}">${p.category_name}</a>` : ''}
+      <h3><a href="${postUrl(p)}">${p.title}</a></h3>
+      ${summary !== '' ? html`<p>${summary}</p>` : ''}
+      <time datetime="${isoDate(p.published_at)}">${ctx.ago(p.published_at)}</time>
+    </div>
+  </article>`;
+}
+
+/** Photo on the side, headline, summary, time. */
 function storyRow(ctx, p, showSummary = true, showTag = true) {
   const summary = summaryOf(p, 150);
   return html`
-  <article class="row${p.image === '' ? ' row-noimg' : ''}">
+  <article class="row ${catClass(p.category_id)}${p.image === '' ? ' row-noimg' : ''}">
     ${p.image !== '' ? html`<a class="row-img" href="${postUrl(p)}" tabindex="-1" aria-hidden="true"><img src="${imgUrl(p.image)}" alt="" loading="lazy"></a>` : ''}
     <div class="row-text">
       ${showTag && p.category_name ? html`<a class="tag" href="${catUrl(p.category_id)}">${p.category_name}</a>` : ''}
@@ -113,6 +173,12 @@ function storyRow(ctx, p, showSummary = true, showTag = true) {
     </div>
   </article>`;
 }
+
+const secHead = (title, cls = '', more = null) => html`
+  <div class="sec-head ${cls}">
+    <h2>${title}</h2>
+    ${more ? html`<a class="more" href="${more.href}">${more.label}</a>` : ''}
+  </div>`;
 
 function pager(ctx, page, pages, base) {
   if (pages < 2) return '';
@@ -129,23 +195,47 @@ function mostReadBox(ctx, top) {
   if (!top || !top.length) return '';
   return html`
   <section class="side-box">
-    <h2>${ctx.t('most_read')}</h2>
+    ${secHead(ctx.t('most_read'))}
     <ol class="ranked">${top.map((p) => html`<li><a href="${postUrl(p)}">${p.title}</a></li>`)}</ol>
   </section>`;
 }
 
+function sectionsBox(ctx, counts) {
+  if (!ctx.cats.length) return '';
+  return html`
+  <section class="side-box">
+    ${secHead(ctx.t('categories'))}
+    <ul class="cat-list">${ctx.cats.map((c) => html`<li class="${catClass(c.id)}"><a href="${catUrl(c.id)}"><span>${c.name}</span>${counts ? html`<b>${counts[c.id] || 0}</b>` : ''}</a></li>`)}</ul>
+  </section>`;
+}
+
+function moreNewsBox(ctx, posts) {
+  if (!posts || !posts.length) return '';
+  return html`
+  <section class="side-box">
+    ${secHead(ctx.t('more_news'))}
+    <div class="mini-list">${posts.map((p) => html`<a class="mini ${catClass(p.category_id)}" href="${postUrl(p)}"><b>${p.title}</b><time datetime="${isoDate(p.published_at)}">${ctx.ago(p.published_at)}</time></a>`)}</div>
+  </section>`;
+}
+
+/* ---------- Pages ---------- */
+
 function homePage(ctx, d) {
-  const { lead, top, latest, breaking, page, pages, mostRead } = d;
+  const { lead, side, strip, latest, breaking, blocks, counts, page, pages, mostRead } = d;
+  // The ticker moves; its speed follows the amount of text so it stays readable.
+  const tickerSeconds = Math.max(18, Math.round(breaking.reduce((n, b) => n + b.title.length, 0) / 4.5));
+  const tickerItems = (hidden) => html`<ul${hidden ? raw(' aria-hidden="true"') : ''}>${breaking.map((b) => html`<li><a href="${postUrl(b)}"${hidden ? raw(' tabindex="-1"') : ''}>${b.title}</a></li>`)}</ul>`;
+
   const content = html`
 ${breaking.length && page === 1 ? html`<div class="breaking">
   <div class="wrap breaking-in">
     <strong>${ctx.t('breaking')}</strong>
-    <ul>${breaking.map((b) => html`<li><a href="${postUrl(b)}">${b.title}</a></li>`)}</ul>
+    <div class="breaking-view"><div class="breaking-track" style="animation-duration:${tickerSeconds}s">${tickerItems(false)}${tickerItems(true)}</div></div>
   </div>
 </div>` : ''}
 ${!lead ? html`<div class="wrap notice"><p>${ctx.t('no_posts')}</p></div>` : html`
-${page === 1 ? html`<section class="wrap front${top.length ? '' : ' front-solo'}">
-  <article class="lead${lead.image === '' ? ' lead-noimg' : ''}">
+${page === 1 ? html`<section class="wrap front${side.length ? '' : ' front-solo'}">
+  <article class="lead ${catClass(lead.category_id)}${lead.image === '' ? ' lead-noimg' : ''}">
     ${lead.image !== '' ? html`<a class="lead-img" href="${postUrl(lead)}" tabindex="-1" aria-hidden="true"><img src="${imgUrl(lead.image)}" alt=""></a>` : ''}
     <div class="lead-slab">
       ${lead.category_name ? html`<a class="tag" href="${catUrl(lead.category_id)}">${lead.category_name}</a>` : ''}
@@ -154,59 +244,90 @@ ${page === 1 ? html`<section class="wrap front${top.length ? '' : ' front-solo'}
       <time datetime="${isoDate(lead.published_at)}">${ctx.ago(lead.published_at)}</time>
     </div>
   </article>
-  ${top.length ? html`<div class="front-side">${top.map((p) => storyRow(ctx, p, false))}</div>` : ''}
-</section>` : ''}
+  ${side.length ? html`<div class="front-side">${side.map((p) => tile(ctx, p))}</div>` : ''}
+</section>
+${strip.length ? html`<section class="wrap strip-zone">
+  ${secHead(ctx.t('top_stories'))}
+  <div class="strip">${strip.map((p) => card(ctx, p))}</div>
+</section>` : ''}` : ''}
+
 <div class="wrap columns">
   <section class="col-main">
-    ${latest.length ? html`<h2 class="heading">${ctx.t('latest')}</h2>
+    ${latest.length ? html`${secHead(ctx.t('latest'))}
     ${latest.map((p) => storyRow(ctx, p))}
     ${pager(ctx, page, pages, '/')}` : ''}
   </section>
   <aside class="col-side">
     ${mostReadBox(ctx, mostRead)}
-    <section class="side-box">
-      <h2>${ctx.t('categories')}</h2>
-      <ul class="plain">${ctx.cats.map((c) => html`<li><a href="${catUrl(c.id)}">${c.name}</a></li>`)}</ul>
-    </section>
+    ${sectionsBox(ctx, counts)}
   </aside>
-</div>`}`;
+</div>
+
+${page === 1 && blocks.length ? html`<section class="catzone">
+  <div class="wrap">
+    <h2 class="zone-title">${ctx.t('by_section')}</h2>
+    <div class="blocks">
+      ${blocks.map(({ cat, posts }) => html`<section class="block ${catClass(cat.id)}">
+        ${secHead(cat.name, '', { href: catUrl(cat.id), label: ctx.t('see_all') })}
+        <article class="block-main">
+          <a class="block-img" href="${postUrl(posts[0])}" tabindex="-1" aria-hidden="true">${photo(ctx, posts[0])}</a>
+          <div>
+            <h3><a href="${postUrl(posts[0])}">${posts[0].title}</a></h3>
+            <p>${summaryOf(posts[0], 110)}</p>
+            <time datetime="${isoDate(posts[0].published_at)}">${ctx.ago(posts[0].published_at)}</time>
+          </div>
+        </article>
+        ${posts.length > 1 ? html`<ul class="block-list">${posts.slice(1).map((p) => html`<li><a href="${postUrl(p)}">${p.title}</a><time datetime="${isoDate(p.published_at)}">${ctx.ago(p.published_at)}</time></li>`)}</ul>` : ''}
+      </section>`)}
+    </div>
+  </div>
+</section>` : ''}`}`;
   return layout(ctx, { active: 'home', canonical: ctx.origin + (page > 1 ? `/?page=${page}` : '/') }, content);
 }
 
 function categoryPage(ctx, d) {
-  const { cat, posts, total, page, pages, mostRead } = d;
+  const { cat, posts, total, page, pages, mostRead, counts } = d;
+  const first = page === 1 ? posts[0] : null;
+  const rest = first ? posts.slice(1) : posts;
   const content = html`
-<div class="wrap columns">
+<header class="cat-hero ${catClass(cat.id)}">
+  <div class="wrap">
+    <p class="crumbs"><a href="/">${ctx.t('home')}</a><span aria-hidden="true">/</span>${cat.name}</p>
+    <h1>${cat.name}</h1>
+    <p class="cat-count">${fmt(ctx.t('stories'), total)}</p>
+  </div>
+</header>
+<div class="wrap columns ${catClass(cat.id)}">
   <section class="col-main">
-    <h1 class="heading heading-page">${cat.name} <small>${fmt(ctx.t('stories'), total)}</small></h1>
     ${!posts.length ? html`<p class="empty">${ctx.t('no_posts')}</p>` : html`
-      ${posts.map((p) => storyRow(ctx, p, true, false))}
+      ${first ? html`<div class="cat-first">${tile(ctx, first, true)}</div>` : ''}
+      ${rest.length ? html`<div class="grid">${rest.map((p) => card(ctx, p, false, true))}</div>` : ''}
       ${pager(ctx, page, pages, catUrl(cat.id))}`}
   </section>
-  <aside class="col-side">${mostReadBox(ctx, mostRead)}</aside>
+  <aside class="col-side">${mostReadBox(ctx, mostRead)}${sectionsBox(ctx, counts)}</aside>
 </div>`;
   return layout(ctx, { title: cat.name, active: cat.id, canonical: ctx.origin + catUrl(cat.id) + (page > 1 ? `?page=${page}` : '') }, content);
 }
 
 function searchPage(ctx, d) {
-  const { q, posts, page, pages, mostRead } = d;
+  const { q, posts, page, pages, mostRead, counts } = d;
   const content = html`
-<div class="wrap columns">
+<div class="wrap columns page-top">
   <section class="col-main">
-    ${q === '' ? html`<h1 class="heading heading-page">${ctx.t('search')}</h1>
+    ${q === '' ? html`${secHead(ctx.t('search'), 'sec-head-page')}
       <p class="empty">${ctx.t('search_prompt')}</p>` : html`
-      <h1 class="heading heading-page">${fmt(ctx.t('search_results'), q)}</h1>
+      ${secHead(fmt(ctx.t('search_results'), q), 'sec-head-page')}
       ${!posts.length ? html`<p class="empty">${fmt(ctx.t('no_results'), q)}</p>` : html`
         ${posts.map((p) => storyRow(ctx, p))}
         ${pager(ctx, page, pages, '/search?q=' + encodeURIComponent(q))}`}`}
   </section>
-  <aside class="col-side">${mostReadBox(ctx, mostRead)}</aside>
+  <aside class="col-side">${mostReadBox(ctx, mostRead)}${sectionsBox(ctx, counts)}</aside>
 </div>`;
   return layout(ctx, { title: ctx.t('search'), q, noindex: true }, content);
 }
 
 function articlePage(ctx, d) {
-  const { post, related, preview, mostRead } = d;
+  const { post, related, preview, mostRead, moreNews } = d;
   const summary = summaryOf(post, 180);
   const link = ctx.origin + postUrl(post);
   const image = post.image !== '' ? ctx.origin + imgUrl(post.image) : '';
@@ -227,20 +348,23 @@ function articlePage(ctx, d) {
 
   const content = html`
 ${preview ? html`<div class="preview-bar"><div class="wrap">${ctx.t('preview')}</div></div>` : ''}
-<div class="wrap columns">
+<div class="wrap columns page-top ${catClass(post.category_id)}">
   <article class="col-main story">
-    ${post.category_name ? html`<a class="tag" href="${catUrl(post.category_id)}">${post.category_name}</a>` : ''}
+    <p class="crumbs"><a href="/">${ctx.t('home')}</a>${post.category_name ? html`<span aria-hidden="true">/</span><a href="${catUrl(post.category_id)}">${post.category_name}</a>` : ''}</p>
     <h1>${post.title}</h1>
     ${post.summary !== '' ? html`<p class="story-summary">${post.summary}</p>` : ''}
     <div class="story-meta">
-      <div>
-        ${post.author !== '' ? html`<span class="story-author">${ctx.t('by')} ${post.author}</span>` : ''}
-        <time datetime="${isoDate(post.published_at)}">${ctx.date(post.published_at)}</time>
+      <div class="byline">
+        ${post.author !== '' ? html`<span class="byline-mark" aria-hidden="true">${firstLetter(post.author)}</span>` : ''}
+        <span>
+          ${post.author !== '' ? html`<span class="story-author">${ctx.t('by')} ${post.author}</span>` : ''}
+          <time datetime="${isoDate(post.published_at)}">${ctx.date(post.published_at)}</time>
+        </span>
       </div>
       <div class="share" aria-label="${ctx.t('share')}">
         <a class="share-wa" href="https://wa.me/?text=${enc(post.title + ' ' + link)}" target="_blank" rel="noopener">WhatsApp</a>
-        <a href="https://www.facebook.com/sharer/sharer.php?u=${enc(link)}" target="_blank" rel="noopener">Facebook</a>
-        <a href="https://twitter.com/intent/tweet?text=${enc(post.title)}&amp;url=${enc(link)}" target="_blank" rel="noopener">X</a>
+        <a class="share-fb" href="https://www.facebook.com/sharer/sharer.php?u=${enc(link)}" target="_blank" rel="noopener">Facebook</a>
+        <a class="share-x" href="https://twitter.com/intent/tweet?text=${enc(post.title)}&amp;url=${enc(link)}" target="_blank" rel="noopener">X</a>
         <button type="button" data-copy="${link}" data-done="${ctx.t('copied')}">${ctx.t('copy_link')}</button>
       </div>
     </div>
@@ -249,12 +373,17 @@ ${preview ? html`<div class="preview-bar"><div class="wrap">${ctx.t('preview')}<
       ${post.image_caption !== '' ? html`<figcaption>${post.image_caption}</figcaption>` : ''}
     </figure>` : ''}
     <div class="story-body">${raw(renderBody(post.body))}</div>
+    <div class="share share-end" aria-label="${ctx.t('share')}">
+      <span>${ctx.t('share')}</span>
+      <a class="share-wa" href="https://wa.me/?text=${enc(post.title + ' ' + link)}" target="_blank" rel="noopener">WhatsApp</a>
+      <a class="share-fb" href="https://www.facebook.com/sharer/sharer.php?u=${enc(link)}" target="_blank" rel="noopener">Facebook</a>
+    </div>
     ${related.length ? html`<section class="related">
-      <h2 class="heading">${fmt(ctx.t('related'), post.category_name)}</h2>
-      ${related.map((p) => storyRow(ctx, p, false, false))}
+      ${secHead(fmt(ctx.t('related'), post.category_name), '', { href: catUrl(post.category_id), label: ctx.t('see_all') })}
+      <div class="grid">${related.map((p) => card(ctx, p, false))}</div>
     </section>` : ''}
   </article>
-  <aside class="col-side">${mostReadBox(ctx, mostRead)}</aside>
+  <aside class="col-side">${mostReadBox(ctx, mostRead)}${moreNewsBox(ctx, moreNews)}</aside>
 </div>`;
   return layout(ctx, {
     title: post.title, description: summary, image, canonical: link, ogType: 'article',

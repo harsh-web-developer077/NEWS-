@@ -3,6 +3,10 @@
 module.exports = {
     "en": {
         "home": "Home",
+        "top_stories": "Top stories",
+        "by_section": "News by section",
+        "see_all": "See all",
+        "more_news": "More news",
         "latest": "Latest news",
         "most_read": "Most read",
         "breaking": "Breaking",
@@ -36,6 +40,10 @@ module.exports = {
     },
     "hi": {
         "home": "होम",
+        "top_stories": "मुख्य खबरें",
+        "by_section": "श्रेणीवार खबरें",
+        "see_all": "सभी देखें",
+        "more_news": "और खबरें",
         "latest": "ताज़ा खबरें",
         "most_read": "सबसे ज़्यादा पढ़ी गई",
         "breaking": "ब्रेकिंग",
