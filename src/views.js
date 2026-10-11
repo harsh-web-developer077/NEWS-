@@ -47,6 +47,7 @@ ${o.image ? html`<meta property="og:image" content="${o.image}">
 <meta name="twitter:card" content="summary_large_image">` : ''}
 ${o.noindex ? raw('<meta name="robots" content="noindex">') : ''}
 <meta name="theme-color" content="#1f2c7c">
+<meta name="google-site-verification" content="stI1yyL92uqnIjdrDb0k9bg0FiOtGK9-fqnFRxk1ZR0" />
 <link rel="alternate" type="application/rss+xml" title="${site}" href="/feed.xml">
 <link rel="stylesheet" href="/assets/css/fonts.css?v=1">
 <link rel="stylesheet" href="/assets/css/style.css?v=4">
